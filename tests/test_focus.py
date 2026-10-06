@@ -315,6 +315,62 @@ def test_vanished_element_returns_the_fresh_page(monkeypatch):
     assert "Traceback" not in out
 
 
+GONE = LookupError("Element is gone (page changed). Call browser_snapshot for fresh ids.")
+
+
+def _redrawing_page(monkeypatch, before: dict, after: dict, stale: set):
+    """A page that re-draws itself: ids in `stale` are gone; the snapshot shows `after`."""
+    sess = browser.BrowserSession()
+    sess.items = dict(before)
+    done = []
+    monkeypatch.setattr(sess, "call", lambda fn, *a: fn(*a))
+
+    def act(kind):
+        def run(element_id=None, *rest, **kw):
+            if element_id in stale:
+                raise GONE
+            done.append((kind, element_id))
+            return f"{kind} ok"
+        return run
+    monkeypatch.setattr(sess, "type_text", act("typed"))
+    monkeypatch.setattr(sess, "click", act("clicked"))
+
+    def snapshot(f=None, m=100):
+        sess.items = dict(after)
+        return "URL: https://jobs.example\n" + "\n".join(f'[{i}] {it["tag"]} "{it["label"]}"' for i, it in after.items())
+    monkeypatch.setattr(sess, "snapshot", snapshot)
+    monkeypatch.setattr(browser, "session", sess)
+    return done
+
+
+def test_a_redrawn_field_is_used_again(monkeypatch):
+    # Greenhouse and Workable re-draw a field after each change, so its id is stale a moment later (26 lost steps)
+    city = {"tag": "input", "type": "text", "label": "City", "question": ""}
+    done = _redrawing_page(monkeypatch, {80: {"id": 80, **city}},
+                           {91: {"id": 91, **city}, 92: {"id": 92, **city, "label": "Country"}}, {80})
+    out = browser.browser_type("Hyderabad", element_id=80)
+    assert done == [("typed", 91)] and 'found the same "City" again as [91]' in out
+    yes = {"tag": "button", "label": "Yes", "question": "Are you willing to relocate?"}
+    done = _redrawing_page(monkeypatch, {61: {"id": 61, **yes}},
+                           {72: {"id": 72, **yes}, 73: {"id": 73, **yes, "label": "No"}}, {61})
+    assert browser.browser_click(element_id=61).startswith("(The page re-drew") and done == [("clicked", 72)]
+
+
+def test_moving_on_or_sending_is_never_redone_on_a_new_element(monkeypatch):
+    for label in ("Next", "Submit application", "Post", "Save and continue"):
+        button = {"tag": "button", "label": label}
+        done = _redrawing_page(monkeypatch, {50: {"id": 50, **button}}, {70: {"id": 70, **button}}, {50})
+        out = browser.browser_click(element_id=50)
+        assert out.startswith("NOT DONE") and done == [], label         # the AI looks at the new page first
+    remove = {"tag": "button", "label": "Remove", "question": ""}
+    done = _redrawing_page(monkeypatch, {40: {"id": 40, **remove}},
+                           {41: {"id": 41, **remove}, 42: {"id": 42, **remove}}, {40})
+    assert browser.browser_click(element_id=40).startswith("NOT DONE") and done == []   # two matches: not a guess
+    box = {"tag": "textarea", "label": "Message", "question": ""}
+    done = _redrawing_page(monkeypatch, {30: {"id": 30, **box}}, {31: {"id": 31, **box}}, {30})
+    assert browser.browser_type("hi", element_id=30, submit=True).startswith("NOT DONE") and done == []
+
+
 def test_bids_get_a_verdict():
     assert browser.is_submit_click({"tag": "button"}, "Place Bid", "https://www.freelancer.com/projects/x")
     assert browser.is_submit_click({"tag": "button"}, "Bid Now", "https://www.freelancer.in/projects/view")

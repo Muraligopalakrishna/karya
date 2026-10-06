@@ -80,6 +80,24 @@ def test_answers_need_the_users_own_word():
                                                               {"q": "Gender", "options": ["Male", "Female"]}]
 
 
+def test_job_dates_are_not_the_notice_period(monkeypatch):
+    # 2026-10-06: "Start date year" of a past job was read as "when can you start", so the real date was blocked and
+    # the AI saved an invented "March 2026" instead; saving the user's answer would also have replaced their notice period
+    from karya.memory import memory_store
+    monkeypatch.setattr(jobs, "read_resume", lambda path=None: "Founder - Acme Labs (2023 - Present)\n"
+                                                               "Video Editor Intern, Studio (Jul 2024 - Sep 2024)")
+    answers.save("Notice period", "Immediately")
+    assert answers.classify("Start date year") == answers.classify("End date month") == "history_dates"
+    assert answers.classify("When can you start?") == answers.classify("Earliest start date") == "notice_period"
+    assert answers.check("Start date year", "2024") is None and answers.check("Start date month", "July") is None
+    assert answers.check("End date month", "Present") is None and answers.check("Start date month", "07") is None
+    assert "would be a guess" in answers.check("Start date year", "2026")           # not in the resume: invented
+    assert "would be a guess" in answers.check("Start date month", "March")
+    answers.save("Start date month (Acme Labs)", "March")                            # the user answers (ask_user)
+    assert answers.check("Start date month", "March") is None
+    assert memory_store.load()["profile"]["notice_period"] == "Immediately"          # untouched
+
+
 def test_fill_holds_back_guesses(monkeypatch):
     sess = browser.BrowserSession()
     sess.items = {1: {"id": 1, "tag": "input", "type": "text", "label": "Full name ✱"},

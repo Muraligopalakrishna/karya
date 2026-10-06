@@ -1369,14 +1369,58 @@ def _run(method: str, *args):
         text = str(exc).splitlines()[0]
         if backend is None or not re.search(r"\bgone\b|isn'?t the|no element labelled|not in the last snapshot", text, re.I):
             return f"ERROR: {text}"
+        old = _old_item(backend, method, args)
         try:  # the page changed: hand back the fresh page so the next step can act on it straight away
             snap = backend.call(backend.snapshot, None, 90)
         except Exception:  # noqa: BLE001
             snap = ""
+        again = _same_element_id(backend, method, args, old) if snap else None
+        if again is not None:
+            try:
+                result = backend.call(getattr(backend, method), again, *args[1:])
+                note = f"(The page re-drew itself; Karya found the same \"{old.get('label')}\" again as [{again}].)\n"
+                return note + result if isinstance(result, str) else result
+            except LookupError:
+                pass
+            except RuntimeError as exc2:
+                return f"ERROR: {str(exc2).splitlines()[0][:400]}"
         reason = re.split(r"\s*(?:Take a new|Call browser_snapshot)", text)[0]
         return f"NOT DONE: {reason} Here is the page now - use these ids:\n{snap}" if snap else f"NOT DONE: {text}"
     except RuntimeError as exc:
         return f"ERROR: {str(exc).splitlines()[0][:400]}"
+
+
+# Tonight's run lost 26 steps to "element is gone": pages like Greenhouse and Workable re-draw a field after every
+# change, so its id is stale a second later. The same element (same kind, label and question) is used again, once.
+_HEAL = ("click", "type_text", "select", "check", "upload")
+_PAGE_MOVE = re.compile(r"\b(next|continue|save|back|previous|prev|submit|apply|done|finish|review|proceed|confirm|"
+                        r"close|cancel|skip|sign ?in|log ?in)\b", re.I)
+
+
+def _old_item(backend, method: str, args) -> dict | None:
+    if method not in _HEAL or not args:
+        return None
+    try:
+        item = backend.items.get(int(args[0]))
+    except (TypeError, ValueError):
+        return None
+    return dict(item) if item else None
+
+
+def _same_element_id(backend, method: str, args, old: dict | None) -> int | None:
+    """The new id of exactly one element that is the same as `old`, or None. Never for a click that moves the form
+    on or sends something (Next, Submit, Post...: the AI looks at the new page and those checks run again), and never
+    for typing that presses Enter."""
+    if not old or not (old.get("label") or "").strip():
+        return None
+    label = old["label"].strip()
+    if method == "click" and (_PAGE_MOVE.search(label) or classify_click(old, label, backend.url) == CRITICAL):
+        return None
+    if method == "type_text" and len(args) > 3 and args[3]:
+        return None
+    key = lambda it: tuple(str(it.get(k) or "").strip().lower() for k in ("tag", "role", "type", "label", "question"))  # noqa: E731
+    same = [it for it in backend.items.values() if key(it) == key(old) and it.get("id") != old.get("id")]
+    return int(same[0]["id"]) if len(same) == 1 else None
 
 
 def _host() -> str:

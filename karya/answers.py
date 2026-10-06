@@ -11,6 +11,11 @@ from .memory import memory_store
 
 # category -> (general profile field or None, pattern on the question text)
 CATEGORIES: dict[str, tuple[str | None, str]] = {
+    # a past job's dates ("Start date year", "End date month"). Checked first: they are NOT "when can you start", and
+    # treating them so blocked real dates and overwrote the user's notice period with a month name (2026-10-06).
+    "history_dates": (None, r"\b(start|end|starting|ending)\s+(date\s+)?(year|month|day)\b|\b(year|month)\s+(of\s+)?"
+                            r"(start|end)\b|^\W*end\s+date\b|\bdate\s+(started|ended|left)\b|"
+                            r"\b(employment|job|role|position|internship)\s+(start|end)\s+date\b"),
     "notice_period": ("notice_period", r"notice period|when can you (start|join)|earliest (start|joining|possible)|joining (date|time)|"
                                         r"available to (start|join)|how soon can you|start date|availability to (start|join)"),
     "current_salary": ("current_salary", r"current (ctc|salary|compensation|pay\b|package|fixed|base|annual)|present (ctc|salary)|"
@@ -136,6 +141,37 @@ def _same(value: str, saved: str) -> bool:
     return len(b) >= 4 and (b in a or a in b)
 
 
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+           "december")
+_ONGOING = re.compile(r"^\W*(present|current(ly)?|now|ongoing|till (date|now)|to date|still (working|there))\W*$", re.I)
+
+
+def _known_facts() -> str:
+    """Everything the user really said about themselves: the resume, their saved answers, their recent messages."""
+    try:
+        from .tools.jobs import read_resume  # lazy: jobs imports this module
+        resume = str(read_resume() or "")
+    except Exception:  # noqa: BLE001 - no resume: only the answers count
+        resume = ""
+    if resume.startswith("ERROR"):
+        resume = ""
+    return " ".join([resume, *map(str, saved_answers().values()), *RECENT_USER]).lower()
+
+
+def _in_known_facts(value: str) -> bool:
+    """A job date may be typed only if its year and month appear in what the user gave Karya."""
+    facts, v = _known_facts(), value.strip().lower()
+    if _ONGOING.match(v):
+        return bool(re.search(r"\b(present|current|ongoing|till date|to date)\b", facts))
+    for year in re.findall(r"\b(?:19|20)\d{2}\b", v):
+        if year not in facts and not re.search(rf"[-–—’'/]\s?{year[2:]}\b", facts):
+            return False
+    for number, month in enumerate(_MONTHS, 1):
+        if re.search(rf"\b{month[:3]}", v) or v in (str(number), f"{number:02d}"):
+            return bool(re.search(rf"\b{month[:3]}", facts))
+    return True
+
+
 def check(question: str, value) -> str | None:
     """None if the value may be typed; otherwise why not (for the AI)."""
     category = classify(question)
@@ -144,6 +180,11 @@ def check(question: str, value) -> str | None:
     text = str(value if value is not None else "").strip()
     if not text:
         return None  # clearing a field claims nothing
+    if category == "history_dates":
+        if _in_known_facts(text):
+            return None
+        return (f'"{short(question)}": "{text[:40]}" isn\'t in the user\'s resume or their answers, so it would be a '
+                "guess. Ask the user for the start and end dates of each job (one ask_user for all of them)")
     if category in ("gender", "demographics") and DECLINE.search(text):
         return None  # "prefer not to say" is always a truthful answer
     saved = saved_answer(question)
