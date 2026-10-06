@@ -18,10 +18,11 @@ CATEGORIES: dict[str, tuple[str | None, str]] = {
                             r"\b(employment|job|role|position|internship)\s+(start|end)\s+date\b"),
     "notice_period": ("notice_period", r"notice period|when can you (start|join)|earliest (start|joining|possible)|joining (date|time)|"
                                         r"available to (start|join)|how soon can you|start date|availability to (start|join)"),
-    "current_salary": ("current_salary", r"current (ctc|salary|compensation|pay\b|package|fixed|base|annual)|present (ctc|salary)|"
-                                          r"last drawn|current total compensation"),
-    "expected_salary": ("expected_salary", r"expected (ctc|salary|compensation|pay\b|package|annual)|salary expectations?|"
-                                            r"desired (salary|pay|compensation)|compensation expectations?|salary requirements?"),
+    "current_salary": ("current_salary", r"current (ctc|salary|compensation|comp\b|pay\b|package|fixed|base|annual)|"
+                                          r"present (ctc|salary|comp)|last drawn|current total compensation"),
+    "expected_salary": ("expected_salary", r"expected (ctc|salary|compensation|comp\b|pay\b|package|annual|fixed)|"
+                                            r"salary expectations?|desired (salary|pay|compensation)|compensation expectations?|"
+                                            r"salary requirements?|fixed comp(ensation)? below which"),
     "gender": ("gender", r"\bgender\b|\bsex\b|\bpronouns?\b"),
     "demographics": (None, r"ethnicit|\brace\b|veteran|disabilit|sexual orientation|\bcaste\b|religio|transgender|hispanic|latin[oax]"),
     "experience_years": (None, r"how many years|years of (relevant |professional |total |work |full[- ]time |hands[- ]on )?experience|"
@@ -105,7 +106,16 @@ def short(question: str) -> str:
 def saved_answers() -> dict[str, str]:
     prof = memory_store.load().get("profile", {})
     answers = prof.get("screening_answers")
-    return answers if isinstance(answers, dict) else {}
+    return {k: v for k, v in answers.items() if not is_secret_question(k)} if isinstance(answers, dict) else {}
+
+
+# A password typed into a question card was once saved here in plain text (2026-10-06). These are never stored or used.
+_SECRET_Q = re.compile(r"pass ?(word|code|phrase)|\bpin\b|\botp\b|one[- ]time (code|password)|verification code|"
+                       r"security (question|answer|code)|\bsecret\b|\bcvv\b|card number", re.I)
+
+
+def is_secret_question(question: str) -> bool:
+    return bool(_SECRET_Q.search(str(question or "")))
 
 
 def saved_answer(question: str) -> str | None:
@@ -116,7 +126,9 @@ def saved_answer(question: str) -> str | None:
     field = CATEGORIES[category][0] if category else None
     if field and prof.get(field) not in (None, ""):
         return str(prof[field])
-    answers = prof.get("screening_answers") if isinstance(prof.get("screening_answers"), dict) else {}
+    if is_secret_question(question):
+        return None
+    answers = saved_answers()
     key = _norm(question)
     if key in answers:
         return str(answers[key])
@@ -212,8 +224,8 @@ def check(question: str, value) -> str | None:
 def save(question: str, answer: str) -> None:
     """Remember the user's answer for this question, and as their general answer for facts like notice period."""
     answer = str(answer or "").strip()[:300]
-    if not answer:
-        return
+    if not answer or is_secret_question(question):
+        return  # passwords, PINs and codes belong in the vault (encrypted), never in the profile
     data = memory_store.load()
     prof = data.setdefault("profile", {})
     answers = prof.get("screening_answers") if isinstance(prof.get("screening_answers"), dict) else {}

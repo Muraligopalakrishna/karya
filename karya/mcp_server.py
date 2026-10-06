@@ -33,7 +33,7 @@ DEFAULT_TOOLS = (
     "web_search", "fetch_url", "find_contacts",
     "send_email", "read_emails", "get_email",
     "find_jobs", "find_funded_companies", "get_job_details", "get_application_profile", "track_application", "tailor_resume",
-    "import_resume",
+    "apply_autofill", "import_resume",
     "ask_user", "karya_activity",
 )
 

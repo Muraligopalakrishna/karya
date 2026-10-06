@@ -45,7 +45,30 @@ def _live_secrets() -> list[str]:
             values.append(token)
     except OSError:
         pass
+    values += _vault_passwords()
     return values
+
+
+_VAULT_CACHE: dict = {"stamp": None, "values": []}
+
+
+def _vault_passwords() -> list[str]:
+    """Saved login passwords (decrypted locally, cached until the vault file changes), so a password that ends up
+    in a page, a log or a form answer is hidden before the AI or the chat sees it."""
+    try:
+        from . import vault
+        path = vault.VAULT_FILE
+        stamp = path.stat().st_mtime_ns if path.exists() else None
+        if stamp != _VAULT_CACHE["stamp"]:
+            found = []
+            for account in vault.list_accounts():
+                got = vault.get_secret(account.get("site", ""))
+                if got and got[1] and len(got[1]) >= 8:
+                    found.append(got[1])
+            _VAULT_CACHE.update(stamp=stamp, values=found)
+        return list(_VAULT_CACHE["values"])
+    except Exception:  # noqa: BLE001 - never let scrubbing crash a result
+        return []
 
 
 def scrub(text):

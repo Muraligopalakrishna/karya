@@ -37,6 +37,21 @@
     const text = [el.getAttribute("placeholder"), el.getAttribute("aria-label"), el.getAttribute("name"), el.type].join(" ");
     return el.type === "search" || el.getAttribute("role") === "searchbox" || /\bsearch\b|\bquery\b|^q$/i.test(text);
   }
+  // A dropdown built from a text box (react-select on Greenhouse, Lever, Ashby) shows the chosen option in a sibling
+  // element, not in the box: read it there, staying inside this one field.
+  function comboValue(el) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+      const boxes = [...node.querySelectorAll("input:not([type=hidden]),select,textarea")].filter((c) => c !== el);
+      if (boxes.length) break;
+      const one = node.querySelector('[class*="single-value" i], [class*="singleValue" i]');
+      if (one && clean(one.innerText)) return clean(one.innerText);
+      const many = [...node.querySelectorAll('[class*="multi-value__label" i], [class*="multiValue" i] [class*="label" i]')]
+        .map((m) => clean(m.innerText)).filter(Boolean);
+      if (many.length) return many.join(", ");
+    }
+    return "";
+  }
   const shortButton = (el) => (el.tagName === "BUTTON" || el.getAttribute("role") === "button" || el.getAttribute("role") === "radio") &&
     clean(el.innerText).length > 0 && clean(el.innerText).length <= 24;
 
@@ -146,6 +161,14 @@
         if (el.placeholder) it.placeholder = clean(el.placeholder).slice(0, 60);
         if (el.name) it.name = el.name.slice(0, 40);
         if (el.required || el.getAttribute("aria-required") === "true") it.required = true;
+        if (it.type === "file") {   // Greenhouse labels both uploads "Attach": id="resume" / id="cover_letter" tell them apart
+          if (el.id) it.key = el.id.slice(0, 40);
+          if (el.accept) it.accept = el.accept.slice(0, 60);
+        }
+        if (!it.value && (role === "combobox" || isCombo(el))) {
+          const chosen = comboValue(el);
+          if (chosen) it.value = chosen.slice(0, 80);
+        }
       }
       if (isControl(el) || shortButton(el)) {
         const q = questionOf(el);
@@ -529,6 +552,18 @@
     return i >= 0 ? opts[i] : null;
   }
   // Karya's own browser clicks suggestions with a real mouse: mark the best one for it.
+  K.listOptions = (args) => {
+    const el = document.querySelector(`[data-jid="${args.id}"]`);
+    let box = null;
+    for (const attr of ["aria-controls", "aria-owns"]) {
+      const id = el && el.getAttribute(attr);
+      if (id && (box = document.getElementById(id))) break;
+    }
+    const nodes = box ? [...box.querySelectorAll('[role="option"], [class*="option" i]')].filter((o) => shown(o))
+                      : optionNodes();
+    const texts = nodes.map((o) => clean(o.innerText).slice(0, 60)).filter((t) => t && !/^no options?\b/i.test(t));
+    return [...new Set(texts)].slice(0, 30);
+  };
   K.markOption = (args) => {
     document.querySelectorAll("[data-karya-opt]").forEach((e) => e.removeAttribute("data-karya-opt"));
     const opts = optionNodes();

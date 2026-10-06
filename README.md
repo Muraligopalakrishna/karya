@@ -10,7 +10,7 @@
 - **Recently funded companies.** `find_funded_companies` reads funding news from any country (Google News, TechCrunch, Crunchbase News, tech.eu, Inc42, YourStory) and Y Combinator's latest batches, ranks the companies for you (a fresh round, Series A-C, your country and field, open roles that fit), finds each one's careers page and lists their matching jobs.
 - **Your companies.** Add any company by name or careers-page URL in your job preferences; Karya finds its careers system once and checks it on every search.
 - **It remembers what you applied to.** Every application goes into a tracker on your PC. New searches leave out jobs you already applied to, and companies you applied to in the last 60 days, so each session brings new companies. Name a company (or ask for them) to see it again. Karya never submits the same job twice.
-- **Applying.** It reads the posting and the form's questions, writes a cover letter, builds a resume tailored to that job (PDF), fills the form and submits after you approve. It never adds a skill you haven't approved, and it logs every application.
+- **Applying.** It reads the posting and the form's questions, writes a cover letter, builds a resume tailored to that job (PDF), fills the form and submits after you approve. Like autofill apps, it fills everything it already knows in one step (name, contact details, links, location, the tailored resume, your earlier answers), so the AI only handles the questions that are left. It never adds a skill you haven't approved, and it logs every application.
 - **No resume yet?** It builds one with you by asking short questions.
 - **Accounts.** Save logins in Settings, or Karya asks when a site needs one. Passwords are encrypted on your PC with Windows DPAPI and never sent to the AI. Karya types them into the page itself, and only on the matching website. It can also create new accounts for you with strong generated passwords.
 - **Research and outreach.** Web and news search, reading pages, and `find_contacts` (public emails and social links for any website), then personal emails that you approve one by one.
@@ -74,7 +74,7 @@ For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:
   - the same post twice
   - daily limits: 40 emails, 10 posts and 30 applications by default, changeable in Setup
 - Submits, posts and bids come back as `RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED`. `karya_activity` lists what really happened today.
-- 37 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, e.g. `browser,email`, or `all`.
+- 38 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, e.g. `browser,email`, or `all`.
 - Passwords never reach the other AI. Setup has a switch to turn MCP access off.
 - Some apps stop a tool call after a minute. Set a longer tool timeout (Codex: `tool_timeout_sec = 900`) so there's time to approve.
 

@@ -642,6 +642,33 @@ class BrowserSession(_Common):
             return page.get_by_text(text, exact=False).first, None
         raise ValueError("Give element_id (from browser_snapshot) or text.")
 
+    def options_of(self, element_id) -> list[str]:
+        """The options of one dropdown: open it, read its own list, close it by leaving the field (nothing is chosen;
+        no Escape, which would close a dialog such as LinkedIn's Easy Apply)."""
+        self._ensure()
+        element_id = int(element_id)
+        loc, _ = self._locator(element_id)
+        frame = self.frames.get(element_id) or self.page.main_frame
+        try:
+            loc.click(timeout=3000)
+            self.page.wait_for_timeout(350)
+            found = frame.evaluate(PAGE_CALL_JS, {"fn": "listOptions", "args": {"id": element_id}}) or []
+        finally:
+            try:
+                loc.evaluate("e => e.blur()")
+            except Exception:  # noqa: BLE001
+                pass
+        return [str(o) for o in found if str(o).strip()][:30]
+
+    def _type_into_combo(self, loc, text: str, clear: bool = True) -> None:
+        """Dropdowns made from a text box (react-select on Greenhouse, Lever, Ashby) open their list only for real key
+        presses: fill() sets the text without opening it, so no option could be picked (2026-10-07, Razorpay)."""
+        loc.click(timeout=5000)
+        if clear:
+            loc.press("Control+A")
+            loc.press("Backspace")
+        loc.press_sequentially(text, delay=25)
+
     def _pick_suggestion(self, element_id: int, value: str) -> str:
         """After typing into a combobox: click the matching suggestion with a real mouse click.
         Returns the picked text, or '' (self.last_options then holds what the list showed)."""
@@ -731,17 +758,20 @@ class BrowserSession(_Common):
             except Exception:
                 pass
         else:
-            if clear:
+            combo = wants_pick(item) and not submit
+            if combo:
+                self._type_into_combo(loc, text, clear)
+            elif clear:
                 loc.fill(text, timeout=8000)
             else:
                 loc.press_sequentially(text, delay=5)
             try:
-                if text and loc.input_value(timeout=2000) != text and clear:
+                if not combo and text and loc.input_value(timeout=2000) != text and clear:
                     loc.fill("")
                     loc.press_sequentially(text, delay=8)
             except Exception:
                 pass
-            if wants_pick(item) and not submit:
+            if combo:
                 picked = self._pick_suggestion(item["id"], text)
         self.last_typed = item or {"label": label or ""}
         if submit:
@@ -783,13 +813,15 @@ class BrowserSession(_Common):
                     self.page.keyboard.press("Control+A")
                     self.page.keyboard.insert_text(str(val))
                 elif op == "fill":
-                    loc.fill(str(val), timeout=8000)
                     if wants_pick(item):
+                        self._type_into_combo(loc, str(val))
                         chosen = self._pick_suggestion(element_id, str(val))
                         if chosen:
                             note = f" -> picked \"{chosen}\""
                         elif item.get("role") == "combobox" or self.last_options:
                             note = self._no_match_note(str(val))
+                    else:
+                        loc.fill(str(val), timeout=8000)
                 done.append(label + note)
             except Exception as exc:
                 problems.append(f"[{raw_id}] {label}: {str(exc).splitlines()[0][:150]}")
@@ -1808,7 +1840,11 @@ def _check_already_applied(result):
     "new_tab": P("boolean", "Open in a new tab"),
 }, required=["url"], group="browser")
 def browser_open(url: str, new_tab: bool = False):
-    return _check_already_applied(_run("open", url, new_tab))
+    result = _check_already_applied(_run("open", url, new_tab))
+    if isinstance(result, str) and not result.startswith(("ERROR", "NOT DONE")) and "is already applied" not in result:
+        from . import autofill   # a picked job's form: fill everything Karya knows in the same step
+        result += autofill.after_open(_current().url)
+    return result
 
 
 @tool("browser_snapshot", "List the current page's clickable/typeable elements with [id] numbers (form fields show "
@@ -1844,7 +1880,16 @@ def browser_click(element_id: int | None = None, text: str | None = None, double
     elif isinstance(result, str) and ("RESULT: UNCONFIRMED" in result or "RESULT: NOT SUBMITTED" in result):
         from .. import apply_queue
         apply_queue.note_result(before, "unconfirmed" if "UNCONFIRMED" in result else "not_submitted")
+    elif isinstance(result, str) and result.startswith("Clicked") and item and _OPENS_FORM.search(item.get("label") or "") \
+            and not is_submit_click(item, item.get("label") or "", before):
+        from . import autofill   # Apply opened the form, or Next showed its next page: fill what Karya knows
+        result += autofill.after_open(_current().url)
     return result
+
+
+# Clicks after which a picked job's form (or its next page) is on screen.
+_OPENS_FORM = re.compile(r"^\W*(easy )?apply\b|\bapply (now|for|to|on|here)\b|^\W*(next|continue)\b|save (and|&) continue|"
+                         r"start (your |my )?application|i'?m interested", re.I)
 
 
 @tool("browser_type", "Type text into an input, textarea or rich editor. submit=true presses Enter afterwards. "

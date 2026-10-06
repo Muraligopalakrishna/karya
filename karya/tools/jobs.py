@@ -962,9 +962,10 @@ def get_application_profile():
     for field in ("current_salary", "gender", "date_of_birth"):
         if prof.get(field):
             out[field] = prof[field]
-    answers = prof.get("screening_answers")
-    if isinstance(answers, dict) and answers:
-        out["saved_form_answers"] = dict(list(answers.items())[-25:])
+    from .. import answers as answer_store
+    saved = answer_store.saved_answers()          # passwords and codes are never in here
+    if saved:
+        out["saved_form_answers"] = dict(list(saved.items())[-25:])
     missing = [f for f in ("email", "phone", "location", "linkedin", "work_authorization", "years_experience",
                            "notice_period", "current_salary", "expected_salary") if not out.get(f)]
     if not out["resume_path"]:
