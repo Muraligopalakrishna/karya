@@ -1,0 +1,13 @@
+# Your settings, keys and personal data - never commit these
+.env
+data/
+workspace/
+*.pdf
+*.docx
+karya/extension/config.json
+
+# Python / tools
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

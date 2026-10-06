@@ -1,0 +1,15 @@
+# Karya personal agent - exact pinned versions (Python 3.11)
+openai==3.22.1
+fastapi==0.142.2
+uvicorn==0.54.0
+websockets==17.1
+python-dotenv==1.2.3
+ddgs==9.16.0
+yfinance==1.7.0
+playwright==1.63.0
+psutil==7.2.2
+pypdf==6.19.0
+Send2Trash==2.1.0
+beautifulsoup4==4.15.0
+requests==2.34.2
+pytest==9.1.1

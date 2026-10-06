@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Karya</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="conn-dot" aria-hidden="true"></span>
+      <h1>Karya</h1>
+      <span class="provider" id="provider-label">connecting...</span>
+    </div>
+    <div class="actions">
+      <label class="toggle" title="When on, Karya runs everyday actions (commands, file edits, uploads) without asking. It ALWAYS asks before sending, posting, applying, paying, deleting or publishing.">
+        <input type="checkbox" id="auto-mode">
+        <span>Ask only for critical actions</span>
+      </label>
+      <label class="toggle" title="When on, Karya works until the task is done: it doesn't stop to ask 'shall I continue?', gets many more steps (up to an hour per message) and only stops for things only you can do. Sending, posting, applying and paying still need your approval.">
+        <input type="checkbox" id="keep-going">
+        <span>Keep going until done</span>
+      </label>
+      <button type="button" id="setup-btn" class="ghost">Setup</button>
+      <button type="button" id="new-chat" class="ghost">New chat</button>
+    </div>
+  </header>
+
+  <section id="setup-panel" class="setup" hidden aria-label="Setup status"></section>
+
+  <main id="chat" class="chat" aria-live="polite" aria-label="Conversation">
+    <div id="welcome" class="welcome">
+      <h2>What should I do for you?</h2>
+      <p>I can research the web, check stocks and news, find and apply for jobs and freelance work, send email,
+         post on your social accounts, fix things on this PC and build websites. I'll ask before anything risky.</p>
+      <div class="chips" role="list">
+        <button type="button" class="chip" role="listitem">Find entry-level frontend jobs at startups (US, UK or remote) that match my resume</button>
+        <button type="button" class="chip" role="listitem">Today's stock market news with Nifty, Sensex and S&amp;P 500 levels</button>
+        <button type="button" class="chip" role="listitem">Find freelance website design projects I could bid on</button>
+        <button type="button" class="chip" role="listitem">Check my PC's health and tell me what is slowing it down</button>
+        <button type="button" class="chip" role="listitem">Write a LinkedIn post about my latest project and open it ready to post</button>
+        <button type="button" class="chip" role="listitem">Build my resume with me, then a portfolio website from it</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="composer">
+    <div id="status-line" class="status-line" role="status"></div>
+    <form id="chat-form" autocomplete="off">
+      <label for="input" class="sr-only">Message Karya</label>
+      <textarea id="input" rows="1" placeholder="Ask me to do anything... (Enter to send, Shift+Enter for a new line)"></textarea>
+      <button type="button" id="stop-btn" class="danger" hidden>Stop</button>
+      <button type="submit" id="send-btn">Send</button>
+    </form>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
