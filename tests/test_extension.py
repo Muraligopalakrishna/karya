@@ -130,6 +130,11 @@ def test_upload_precheck_blocks_resume_for_another_company(tmp_path, monkeypatch
     monkeypatch.setattr(browser, "_current", lambda: fake)
     stop = browser._upload_precheck({"file_path": str(pdf), "element_id": 3})
     assert stop and stop.startswith("NOT UPLOADED") and "Flick TV" in stop
+    from karya import answers
+    monkeypatch.setattr(answers, "RECENT_USER", ["apply to the SpotDraft job"])
+    stop = browser._upload_precheck({"file_path": str(pdf), "element_id": 3, "any_resume": True})
+    assert stop and stop.startswith("NOT UPLOADED")          # the AI alone can't override the guard
+    monkeypatch.setattr(answers, "RECENT_USER", ["just use the same resume for this one"])
     assert browser._upload_precheck({"file_path": str(pdf), "element_id": 3, "any_resume": True}) is None
     fake.title = "Flick TV - Product Analyst"
     assert browser._upload_precheck({"file_path": str(pdf), "element_id": 3}) is None  # right company

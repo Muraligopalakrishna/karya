@@ -6,13 +6,26 @@ from __future__ import annotations
 
 from ..registry import P, tool
 
+# Karya's browser keeps the user's logins (cookies), so the vault is only a fallback. An agent once told the user
+# "you're not logged in to X" just because x.com wasn't in list_accounts, while the browser was signed in.
+SIGNED_IN_FIRST = ("Karya's browser keeps the user's logins, so open the site FIRST and look: a site missing from "
+                   "list_accounts does NOT mean they're logged out.")
+
+
+def _login_step(site: str) -> str:
+    return (f"Only if the page shows a sign-in screen: log in with browser_type_secret for {site} (list_accounts shows "
+            "the saved ones). No saved login: ask the user to sign in in Karya's browser window, then continue. "
+            "CAPTCHA/OTP: ask the user.")
+
+
 PLAYBOOKS: dict[str, dict] = {
     "instagram": {
         "title": "Post a reel/video or photo on Instagram (web, instagram.com)",
         "needs_login": True,
         "steps": [
-            "list_accounts; log in with browser_type_secret if needed (instagram.com). CAPTCHA/OTP: ask the user.",
-            "browser_open https://www.instagram.com/ and click the Create button (the + / 'New post').",
+            "browser_open https://www.instagram.com/. " + SIGNED_IN_FIRST,
+            _login_step("instagram.com"),
+            "Click the Create button (the + / 'New post').",
             "Click 'Post', then 'Select from computer' and browser_upload the file (the full path).",
             "CROP SCREEN - this is where size is set. Click the crop/aspect icon (two diagonal arrows, bottom-left) and "
             "choose 'Original' so the video/photo keeps its real size and isn't cut to a square. Do NOT leave it on 1:1.",
@@ -30,27 +43,39 @@ PLAYBOOKS: dict[str, dict] = {
         "title": "Post an update on LinkedIn (web)",
         "needs_login": True,
         "steps": [
-            "list_accounts; if not logged in, browser_type_secret for linkedin.com.",
-            "social_compose(platform='linkedin', text=...) opens the composer with your text, OR browser_open the feed "
-            "and click 'Start a post'.",
-            "Check the text is in the editor (browser_snapshot). To add an image/video, click Add media and "
-            "browser_upload the file; wait for it to finish processing.",
+            "WITH A VIDEO/PHOTO, media first, then the text: browser_open https://www.linkedin.com/feed/ (the post box "
+            "has 'Video' and 'Photo'). " + SIGNED_IN_FIRST,
+            _login_step("linkedin.com"),
+            "browser_upload the file on 'Video' (or 'Photo'); if an Editor opens with 'Upload from computer', "
+            "browser_upload on that. Karya chooses the file in the file picker, so never just click those buttons. If "
+            "the Editor's button says 'Loading', the page is waiting for a file: call browser_upload with it anyway.",
+            "Wait until the video/photo shows in the Editor, then click Next: the post editor opens with it attached.",
+            "Now type the user's text into the post editor (browser_type). Snapshot: the text AND the media must both "
+            "be there.",
+            "TEXT ONLY (no file): social_compose(platform='linkedin', text=...) opens the composer with your text, or "
+            "click 'Start a post' and type it.",
             "Set the audience (Anyone/Connections) only if the user asked; the default is fine.",
-            "Click Post. Verify the page shows 'Post successful' / the update appears, then tell the user.",
+            "Click Post. Verify the page shows 'Post successful' / the update appears (with the video, if there was "
+            "one), then tell the user.",
         ],
-        "notes": "Posting on LinkedIn is free.",
+        "notes": "Posting on LinkedIn is free. Never post without the file the user gave: if it can't be attached, "
+                 "stop and tell them.",
     },
     "x": {
         "title": "Post on X / Twitter (web)",
         "needs_login": True,
         "steps": [
-            "list_accounts; if not logged in, browser_type_secret for x.com.",
-            "social_compose(platform='x', text=...) opens the composer with your text.",
-            "Attach media with browser_upload if the user gave a file; wait for the upload.",
+            "WITH A VIDEO/PHOTO, media first, then the text: browser_open https://x.com/home and browser_upload the "
+            "file on the composer's media button / file input. " + SIGNED_IN_FIRST,
+            _login_step("x.com"),
+            "Wait for the upload to finish (the preview shows and Post is enabled), then type the user's text into the "
+            "composer (browser_type).",
+            "TEXT ONLY (no file): social_compose(platform='x', text=...) opens the composer with your text.",
             "Click Post. Verify it shows as sent / appears on the timeline, then tell the user.",
         ],
         "notes": "Posting on X is FREE. X Premium (paid) only adds longer posts, edit and a badge; it is NOT needed to "
-                 "post. A brand-new or limited account may be rate-limited by X itself - that's not a Karya limit.",
+                 "post. A brand-new or limited account may be rate-limited by X itself - that's not a Karya limit. "
+                 "Never post without the file the user gave.",
     },
     "reddit": {
         "title": "Post on Reddit (web)",

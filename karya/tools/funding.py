@@ -562,6 +562,8 @@ def find_funded_companies(query: str = "", countries: list[str] | None = None, s
     if stages:
         wanted = [s.lower().replace("_", " ").strip() for s in stages]
         companies = [c for c in companies if any(w in (c.get("round") or "").lower() for w in wanted)]
+    memory = J.applied_memory()
+    companies, hidden = J.skip_applied(companies, memory, asked=query)
     ranked = rank_companies(companies, keys, sectors)
     _remember_for_tags(ranked)
     top = ranked[:limit]
@@ -569,6 +571,8 @@ def find_funded_companies(query: str = "", countries: list[str] | None = None, s
         attach_careers(top[: min(limit, 12)], query, places)
         top = rank_companies(top, keys, sectors)
     jobs_found = [r for c in top for r in (c.get("matching") or [])]
+    jobs_found, more_hidden = J.skip_applied(jobs_found, memory, asked=query)
+    hidden["jobs"] += more_hidden["jobs"]
     if jobs_found:
         locs = places if strict else (prefs.get("locations") or [])
         level = prefs.get("level") or "entry"
@@ -601,6 +605,13 @@ def find_funded_companies(query: str = "", countries: list[str] | None = None, s
         out["more"] = "Nothing matched. Try more days (e.g. 60), fewer filters, or other countries."
     elif places and not strict:
         out["note"] = "Companies in the user's job locations rank higher; other countries are included."
+    if hidden["jobs"] or hidden["companies"]:
+        out["already_applied"] = (
+            "Left out: " + "; ".join(p for p in (
+                f"{len(hidden['companies'])} compan{'y' if len(hidden['companies']) == 1 else 'ies'} the user applied "
+                f"to in the last {memory['days']} days ({', '.join(sorted(hidden['companies'])[:8])})"
+                if hidden["companies"] else "",
+                f"{hidden['jobs']} job(s) they already applied to" if hidden["jobs"] else "") if p) + ".")
     while len(json.dumps(out, ensure_ascii=False)) > 9_500 and len(out["companies"]) > 5:
         out["companies"].pop()
     return out

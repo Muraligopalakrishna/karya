@@ -586,10 +586,13 @@ NO_LOGIN_BOARDS = ("Remotive", "Jobicy", "WeWorkRemotely")
                           "few jobs are found)", items={"type": "string"}),
     "no_login": P("boolean", "Only jobs you can apply to on the company's own form without any login"),
     "limit": P("integer", "How many top matches to return (default 25)"),
+    "include_applied_companies": P("boolean", "Also show companies the user applied to in the last 60 days (left out "
+                                              "by default; jobs they already applied to never show)"),
 }, group="jobs", precheck=lambda args: _search_precheck())
 def find_jobs(query: str = "", locations: list[str] | None = None, remote: bool | None = None, level: str | None = None,
               posted_within_days: int = 30, sources: list[str] | None = None, limit: int = 25, no_login: bool = False,
-              company_types: list[str] | None = None):
+              company_types: list[str] | None = None, include_applied_companies: bool = False):
+    from .. import answers
     from . import funding
     from . import job_sources as S
     prefs = job_preferences()
@@ -603,6 +606,9 @@ def find_jobs(query: str = "", locations: list[str] | None = None, remote: bool 
     chosen = explicit or (NO_LOGIN_DEFAULT if no_login else DEFAULT_SOURCES)
     tasks = _source_tasks(query, locs, remote, level, posted_within_days, prefs, ctypes)
     found, counts, errors = _gather(tasks, [s for s in chosen if s != "linkedin"])
+    memory = applied_memory()
+    asked = query + " " + (answers.RECENT_USER[-1] if answers.RECENT_USER else "")
+    found, hidden = skip_applied(found, memory, include_applied_companies, asked)
     q_terms = [terms(role) for role in query.split(",") if terms(role)]
     skills = user_skills()
     funding.tag_rows(found)
@@ -611,6 +617,10 @@ def find_jobs(query: str = "", locations: list[str] | None = None, remote: bool 
     linkedin_note = ""
     if want_linkedin or (explicit is None and not no_login and len(ranked) < LINKEDIN_BELOW):
         more, more_counts, more_errors = _gather(tasks, ["linkedin"], budget=40)
+        more, more_hidden = skip_applied(more, memory, include_applied_companies, asked)
+        hidden["jobs"] += more_hidden["jobs"]
+        for name, n in more_hidden["companies"].items():
+            hidden["companies"][name] = hidden["companies"].get(name, 0) + n
         found += more
         counts.update(more_counts)
         errors += more_errors
@@ -638,6 +648,9 @@ def find_jobs(query: str = "", locations: list[str] | None = None, remote: bool 
         out["company_types"] = ctypes
     if linkedin_note:
         out["linkedin"] = linkedin_note
+    left_out = hidden_note(hidden, memory["days"])
+    if left_out:
+        out["already_applied"] = left_out
     if len(top) < 10:  # the user wants more than a handful: tell the AI how to widen instead of coming back
         tips = []
         if no_login:
@@ -1207,6 +1220,101 @@ def applications_today() -> int:
     today = time.strftime("%Y-%m-%d")
     return sum(1 for a in applications_store.load().get("applications", [])
                if str(a.get("created", "")).startswith(today) and a.get("status") == "applied")
+
+
+# ----------------------------------------------------------------- what the user already applied to
+# The user, 2026-10-06: "it has to remember what companies it has applied and for next session to not go and do the
+# same thing search same companies again". The tracker (kept on disk across sessions) is the memory: a job already
+# applied to is never shown or submitted again, and companies applied to recently are left out of new searches.
+APPLIED_STATUSES = ("applied", "interview", "offer", "rejected", "withdrawn")
+APPLIED_COMPANY_DAYS = 60
+
+
+def applied_memory(days: int = APPLIED_COMPANY_DAYS) -> dict:
+    """From the tracker: {"jobs": {posting id or url: app}, "companies": {name key: app}, "boards": {careers board:
+    app}, "days": days}. Companies and boards count only for applications in the last `days` days."""
+    from .. import apply_queue
+    from . import job_sources as S
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - days * 86400))
+    jobs, companies, boards = {}, {}, {}
+    for app in applications_store.load().get("applications", []):
+        if app.get("status") not in APPLIED_STATUSES:
+            continue
+        url = str(app.get("url") or "").strip()
+        if url:
+            jobs[url.rstrip("/").lower()] = app
+            key = apply_queue.posting_key(url)
+            if key:
+                jobs[key] = app
+        if str(app.get("created") or "")[:10] < cutoff:
+            continue
+        name = S.norm_name(app.get("company") or "")
+        if len(name) >= 2:
+            companies[name] = app
+        board = (S.parse_ats_url(url) or {}).get("key")
+        if board:
+            boards[board] = app
+    return {"jobs": jobs, "companies": companies, "boards": boards, "days": days}
+
+
+def applied_before(job: dict, memory: dict | None = None) -> dict | None:
+    """The tracked application for this exact posting, if the user already applied to it."""
+    from .. import apply_queue
+    memory = memory or applied_memory()
+    for url in (job.get("url"), job.get("apply")):
+        if not url:
+            continue
+        key = apply_queue.posting_key(url)
+        hit = (key and memory["jobs"].get(key)) or memory["jobs"].get(str(url).rstrip("/").lower())
+        if hit:
+            return hit
+    return None
+
+
+def applied_company(job: dict, memory: dict) -> dict | None:
+    """The user's recent application at this job's company (same name, or the same careers board)."""
+    from . import job_sources as S
+    key = S.norm_name(job.get("company") or job.get("name") or "")
+    if key and key in memory["companies"]:
+        return memory["companies"][key]
+    for url in (job.get("url"), job.get("apply"), job.get("careers")):
+        board = (S.parse_ats_url(str(url or "")) or {}).get("key")
+        if board and board in memory["boards"]:
+            return memory["boards"][board]
+    return None
+
+
+def skip_applied(rows: list[dict], memory: dict, include_companies: bool = False, asked: str = "") -> tuple[list, dict]:
+    """Leave out jobs the user already applied to, and jobs at companies they applied to recently (unless
+    include_companies, or the request names that company). Returns (kept, {"jobs": n, "companies": {name: n}})."""
+    from . import job_sources as S
+    squashed = re.sub(r"[^a-z0-9]", "", (asked or "").lower())
+    named = {k for k in memory["companies"] if len(k) >= 4 and k in squashed}
+    kept, hidden = [], {"jobs": 0, "companies": {}}
+    for row in rows:
+        if applied_before(row, memory):
+            hidden["jobs"] += 1
+            continue
+        app = None if include_companies else applied_company(row, memory)
+        if app and S.norm_name(app.get("company") or "") not in named:
+            name = app.get("company") or row.get("company") or "?"
+            hidden["companies"][name] = hidden["companies"].get(name, 0) + 1
+            continue
+        kept.append(row)
+    return kept, hidden
+
+
+def hidden_note(hidden: dict, days: int = APPLIED_COMPANY_DAYS) -> str:
+    parts = []
+    if hidden.get("jobs"):
+        parts.append(f"{hidden['jobs']} job(s) the user already applied to (never shown again)")
+    companies = hidden.get("companies") or {}
+    if companies:
+        names = sorted(companies, key=lambda n: -companies[n])
+        parts.append(f"{sum(companies.values())} job(s) at {len(names)} compan{'y' if len(names) == 1 else 'ies'} they "
+                     f"applied to in the last {days} days ({', '.join(names[:8])}{', ...' if len(names) > 8 else ''}); "
+                     "include_applied_companies=true shows those again")
+    return ("Left out: " + "; ".join(parts) + ".") if parts else ""
 
 
 @tool("list_applications", "List tracked job/freelance applications.", {

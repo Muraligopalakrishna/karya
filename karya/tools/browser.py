@@ -7,7 +7,9 @@ The model sees numbered elements (with the question each form field belongs to) 
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +26,59 @@ PAGE_CALL_JS = "(a) => {\n" + PAGE_JS + "\nreturn window.__karya[a.fn](a.args);\
 
 _DEAD_BROWSER = re.compile(r"connection closed|has been closed|target closed|browser closed|not connected|"
                            r"closed while reading|pipe|disconnected", re.I)
+
+_PRIVACY_JS = r"""(() => {
+  if (window.__karyaPrivacy) return; window.__karyaPrivacy = true;
+  const SECRETS = __SECRETS__, PHONE = __PHONE__;
+  const css = `[data-karya-blur]{filter:blur(9px)!important}`;
+  const addStyle = () => { if (document.getElementById('karya-privacy')) return; const s = document.createElement('style'); s.id = 'karya-privacy'; s.textContent = css; (document.head || document.documentElement).appendChild(s); };
+  const secret = (t) => { if (!t || t.length < 3) return false; const low = t.toLowerCase(); if (SECRETS.some((s) => low.includes(s))) return true; return PHONE && t.replace(/\D/g, '').includes(PHONE); };
+  const fields = () => document.querySelectorAll('input,textarea,select').forEach((f) => {
+    let v = f.value || ''; if (f.tagName === 'SELECT' && f.selectedOptions && f.selectedOptions[0]) v = f.selectedOptions[0].textContent || v;
+    if (secret(v)) f.setAttribute('data-karya-blur', '1'); else if (f.hasAttribute('data-karya-blur')) f.removeAttribute('data-karya-blur');
+  });
+  document.addEventListener('input', fields, true); document.addEventListener('change', fields, true);
+  setInterval(fields, 300);
+  const mark = (node) => {
+    const el = node.parentElement; if (!el || el.closest('[data-karya-blur]')) return;
+    if ((el.textContent || '').length < 700) { el.setAttribute('data-karya-blur', '1'); return; }
+    const span = document.createElement('span'); span.setAttribute('data-karya-blur', '1'); node.parentNode.insertBefore(span, node); span.appendChild(node);
+  };
+  const scan = (root) => {
+    if (!root) return;
+    if (root.nodeType === 3) { if (secret(root.nodeValue)) mark(root); return; }
+    if (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11) return;
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n; const hits = [];
+    while ((n = w.nextNode())) if (secret(n.nodeValue)) hits.push(n);
+    hits.forEach(mark);
+    if (root.querySelectorAll) root.querySelectorAll('[title],[aria-label],[alt]').forEach((e) => {
+      if (secret(e.getAttribute('title') || '') || secret(e.getAttribute('aria-label') || '') || secret(e.getAttribute('alt') || '')) e.setAttribute('data-karya-blur', '1'); });
+  };
+  const pending = new Set(); let timer = null;
+  const flush = () => { timer = null; addStyle(); const roots = [...pending]; pending.clear(); roots.forEach(scan); };
+  const queue = (n) => { pending.add(n); if (!timer) timer = setTimeout(flush, 60); };
+  new MutationObserver((ms) => { for (const m of ms) { if (m.type === 'characterData') queue(m.target); m.addedNodes.forEach(queue); } })
+    .observe(document, { childList: true, subtree: true, characterData: true });
+  const start = () => { addStyle(); scan(document.body || document.documentElement); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+  setInterval(() => scan(document.body), 1500);
+})();"""
+
+
+def screen_privacy_js() -> str:
+    """For screen recordings (KARYA_SCREEN_PRIVACY=1): blur the user's phone number and salary wherever they show -
+    in typed form fields and in page text. (Name, photo and email may show: the user allowed it.) Only changes what's
+    drawn on screen; what's typed and submitted is untouched."""
+    from ..memory import memory_store
+    prof = memory_store.load().get("profile", {})
+    secrets: set[str] = set()
+    for key in ("current_salary", "expected_salary"):
+        value = str(prof.get(key) or "").strip().lower()
+        if len(value) >= 3:
+            secrets.add(value)
+    phone = re.sub(r"\D", "", str(prof.get("phone") or ""))[-10:]
+    js = _PRIVACY_JS.replace("__SECRETS__", json.dumps(sorted(s for s in secrets if s)))
+    return js.replace("__PHONE__", json.dumps(phone if len(phone) >= 7 else ""))
 _CRITICAL_WORDS = re.compile(
     r"\b(post|publish|tweet|reply|send|submit|apply|share|pay|buy|purchase|order|checkout|delete|remove|confirm|"
     r"donate|transfer|subscribe|unsubscribe|bid|comment|repost|follow|connect|withdraw|accept|decline|"
@@ -33,6 +88,10 @@ _HARMLESS = re.compile(r"\b(search|find|go|filter|show results|next|previous|con
                        r"ok|got it|skip|not now|later|log ?in|sign ?in)\b", re.I)
 # Buttons that only OPEN an editor ("Start a post", "Add a comment") - the real Post/Send click is still gated.
 _OPENER = re.compile(r"^(start|create|write|new|add|compose)\s+(a\s+|an\s+|new\s+)?(post|tweet|message|comment|reply)\b", re.I)
+# Links that only SHOW something ("View post", "Show 35 posts", "See all comments") - they change nothing.
+_VIEWER = re.compile(r"^\s*(view|see|show|read|watch)\s+(the\s+|all\s+|more\s+|new\s+|\d+\s+)*(posts?|tweets?|comments?|"
+                     r"repl(?:y|ies)|reposts?|reactions?|likes?|activity|thread|conversation|application|order|profile)"
+                     r"\s*$", re.I)
 # On these sites an "Apply" button only opens the application form; the real send is "Submit application".
 _FORM_HOSTS = re.compile(r"(^|\.)(linkedin\.com|greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workable\.com|"
                          r"smartrecruiters\.com|ycombinator\.com|workatastartup\.com)$", re.I)
@@ -49,7 +108,7 @@ def classify_click(item: dict | None, label: str, url: str = "") -> str:
     host = urlparse(url or "").netloc.lower()
     if _APPLY_OPENER.search(text) and host and _FORM_HOSTS.search(host) and not re.search(r"submit|send", text, re.I):
         return CONFIRM
-    if _OPENER.search(text):
+    if _OPENER.search(text) or _VIEWER.search(text):
         return SAFE
     if _CRITICAL_WORDS.search(text):
         return CRITICAL
@@ -342,6 +401,9 @@ class BrowserSession(_Common):
         self.next_id = 1      # element ids are never reused within a session
         self.fresh = True     # first snapshot: clear ids left by an earlier session
         self.last_options: list[str] = []
+        self.pending_file: Path | None = None   # the file browser_upload is choosing right now
+        self.chooser_used = False
+        self.open_chooser = None                # a file picker the page opened on a plain click, waiting for a file
 
     def call(self, fn, *args, **kwargs):
         try:
@@ -384,6 +446,25 @@ class BrowserSession(_Common):
             options["viewport"] = {"width": 1366, "height": 900}
         else:
             options["no_viewport"] = True
+        record_dir = os.environ.get("KARYA_RECORD_DIR")   # demo: record ONLY this browser (not the desktop) to video
+        if record_dir:
+            Path(record_dir).mkdir(parents=True, exist_ok=True)
+            options["record_video_dir"] = record_dir
+            options["record_video_size"] = {"width": 1920, "height": 1080}
+            options["viewport"] = {"width": 1920, "height": 1080}
+            options["no_viewport"] = False
+        window = os.environ.get("KARYA_WINDOW")           # demo: "x,y,w,h" in screen DIPs instead of maximized
+        if window:
+            options["chromium_sandbox"] = True              # no "--no-sandbox" warning bar in the recording
+            try:
+                x, y, w, h = (int(float(v)) for v in window.split(","))
+                options["args"] = [a for a in options["args"] if a != "--start-maximized"] + [
+                    f"--window-position={x},{y}", f"--window-size={w},{h}"]
+            except ValueError:
+                pass
+        extra = os.environ.get("KARYA_BROWSER_ARGS", "").split()   # demo: e.g. --force-device-scale-factor=1.5
+        if extra:
+            options["args"] = options["args"] + [a for a in extra if a.startswith("--")]
         errors = []
         for channel in dict.fromkeys([settings.browser_channel, "chrome", "msedge", None]):
             try:
@@ -394,14 +475,37 @@ class BrowserSession(_Common):
                 errors.append(f"{channel}: {str(exc).splitlines()[0][:150]}")
         if self.context is None:
             raise RuntimeError("Could not start Chrome/Edge: " + " | ".join(errors))
+        if os.environ.get("KARYA_SCREEN_PRIVACY"):
+            try:
+                self.context.add_init_script(screen_privacy_js())
+            except Exception:
+                pass
         self.context.on("page", self._on_page)
         self.context.on("close", lambda *_: setattr(self, "context", None))
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self._hook(self.page)
+        for other in self.context.pages[1:]:     # tabs Chrome restored: no Windows file dialog there either
+            self._hook(other)
 
     def _hook(self, page):
         page.on("dialog", self._on_dialog)
         page.on("download", self._on_download)
+        page.on("filechooser", self._on_file_chooser)
+
+    def _on_file_chooser(self, chooser):
+        """Karya's browser never shows the Windows file dialog: nobody can type a path into it, and the page waits
+        ("Loading") until it closes. During browser_upload the file is chosen here; a picker opened by a plain click
+        waits for the next browser_upload."""
+        if self.pending_file is not None:
+            try:
+                chooser.set_files(str(self.pending_file))
+                self.chooser_used = True
+            except Exception as exc:  # noqa: BLE001
+                self.events.append(f"Couldn't choose the file in the page's file picker: {str(exc)[:150]}")
+            return
+        self.open_chooser = chooser
+        self.events.append("The page opened a file picker and is waiting for a file: call browser_upload with the "
+                           "file's full path (Karya chooses it in that picker).")
 
     def _on_page(self, page):
         self._hook(page)
@@ -741,18 +845,63 @@ class BrowserSession(_Common):
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
+        waiting, self.open_chooser = self.open_chooser, None
+        if waiting is not None and getattr(waiting, "page", None) is self.page:
+            try:
+                waiting.set_files(str(path))
+                self._settle(800)
+                return (f"Uploaded {path.name} (into the file picker the page had open).\n"
+                        + self._snapshot(max_items=70, text_chars=800))
+            except Exception:  # noqa: BLE001 - that picker's input is gone: open it again below
+                pass
         loc, item = self._locator(element_id)
         if item and item.get("tag") == "input" and item.get("type") == "file":
             loc.set_input_files(str(path))
         else:
+            label = (item or {}).get("label") or f"element {element_id}"
+            if item and (item.get("disabled") or re.search(r"\bloading\b", label, re.I)):
+                return (f"NOT UPLOADED: \"{label}\" is still loading / disabled, so it can't open a file picker yet. "
+                        "Wait a few seconds and snapshot again; if it stays like this, reload the page (browser_open the "
+                        "same URL) and open the upload dialog again.")
+            self.pending_file, self.chooser_used = path, False
             try:
-                with self.page.expect_file_chooser(timeout=8000) as chooser:
-                    loc.click()
-                chooser.value.set_files(str(path))
-            except Exception:
-                self.page.locator("input[type=file]").first.set_input_files(str(path))
+                try:
+                    loc.click(timeout=5000)
+                except Exception:  # noqa: BLE001 - a covered button: the file input fallback below still works
+                    pass
+                for _ in range(40):                 # up to 8 s for the page to open its file picker
+                    if self.chooser_used:
+                        break
+                    self.page.wait_for_timeout(200)
+            finally:
+                self.pending_file = None
+            if not self.chooser_used:
+                target = self._file_input_for(path)
+                if target is None:
+                    return (f"NOT UPLOADED: clicking \"{label}\" didn't open a file picker and the page has no file "
+                            "input. Open the site's upload dialog first and use ITS upload button (LinkedIn: click "
+                            "'Video' or 'Photo' in the post box, then browser_upload on 'Upload from computer'; X: the "
+                            "composer's media button).")
+                target.set_input_files(str(path))
         self._settle(800)
         return f"Uploaded {path.name}.\n" + self._snapshot(max_items=70, text_chars=800)
+
+    def _file_input_for(self, path: Path):
+        """The page's file input that accepts this kind of file (hidden ones too), without waiting for one."""
+        kind = (mimetypes.guess_type(path.name)[0] or "").split("/")[0]
+        best = None
+        for frame in self.page.frames:
+            try:
+                inputs = frame.locator("input[type=file]")
+                for i in range(min(inputs.count(), 10)):
+                    one = inputs.nth(i)
+                    accept = (one.get_attribute("accept", timeout=1000) or "").lower()
+                    if not accept or kind and (f"{kind}/" in accept or path.suffix.lower() in accept):
+                        return one
+                    best = best or one
+            except Exception:  # noqa: BLE001 - a frame may be gone
+                continue
+        return best
 
     def press(self, key):
         self._ensure()
@@ -1319,6 +1468,10 @@ def _type_precheck(args) -> str | None:
     problem = answer_problem(target, args.get("text"))
     if problem:
         return _needs_answers([problem], "NOT TYPED")
+    if _is_editor(target):
+        first = _media_first(backend.url, "NOT TYPED")
+        if first:
+            return first
     host = urlparse(backend.url).netloc.lower()
     if args.get("submit") and not is_search_field(target) and host and _FORM_HOSTS.search(host):
         return ("NOT TYPED: don't press Enter inside an application form (it can submit it half-filled). Type without "
@@ -1427,6 +1580,16 @@ def _click_precheck(args) -> str | None:
         if limit and outbox.posts_today() >= limit:
             return (f"NOT CLICKED: today's limit of {limit} posts is reached (more can get the account flagged as spam). "
                     "Continue tomorrow, or the user can raise the limit in Karya's Setup.")
+        missing = _media_first(backend.url, "NOT CLICKED (nothing was posted)")
+        if missing:
+            return missing
+        host = urlparse(backend.url).netloc.lower()
+        typed = LAST_COMPOSE.get(host, "")
+        same = outbox.same_post(host, typed) if typed.strip() else None
+        if same:
+            return (f"NOT CLICKED (nothing was posted): exactly this text was already posted on {host} on "
+                    f"{same.get('time', '')[:16]}. Posting it again looks like spam. Write a new post, or tell the "
+                    "user it's already up.")
     elif _FORM_HOSTS.search(urlparse(backend.url).netloc.lower()) or "apply" in backend.url.lower():
         from . import jobs as jobs_mod
         limit = settings.max_applications_per_day
@@ -1438,6 +1601,13 @@ def _click_precheck(args) -> str | None:
     if done and done.get("status") == "applied":
         return (f"NOT CLICKED: {done['title']} at {done['company']} is already applied ({done.get('note') or 'done'}). "
                 "Don't submit it again; go on with the next picked job.")
+    if not is_post_click(item, label, backend.url):
+        from . import jobs as jobs_mod
+        earlier = jobs_mod.applied_before({"url": backend.url})
+        if earlier:
+            return (f"NOT CLICKED: the user already applied to {earlier.get('role') or 'this job'} at "
+                    f"{earlier.get('company') or 'this company'} on {str(earlier.get('created') or '')[:10]} (tracker "
+                    f"#{earlier.get('id')}). Don't apply twice: mark it done and go on with a new job.")
     stop = _not_picked(backend.url)
     if stop:
         return stop
@@ -1456,9 +1626,75 @@ def _click_precheck(args) -> str | None:
             "browser_click again with confirm_empty=true (the user will see a warning).")
 
 
+def _user_allowed_any_resume() -> bool:
+    """The user's own recent words allow uploading a resume made for another job ('use any resume', 'same resume')."""
+    from .. import answers
+    said = " ".join(answers.RECENT_USER[-3:]).lower()
+    return bool(re.search(r"\b(any|same|old|other|existing|master|previous|that)\s+(resume|cv)\b|\b(resume|cv)\s+(is\s+)?fine\b",
+                          said))
+
+
+# ---------------------------------------------------------------- a post with the user's video/photo
+# Karya once posted a LinkedIn update without the video the user gave it (the upload kept failing), then called it
+# done. Now the file must be attached before the text goes in, and Post can't be clicked without it.
+_MEDIA_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)[^\n\"'<>|?*]*?\.(?:mp4|mov|m4v|webm|avi|mkv|gif|jpe?g|png|webp|heic)\b", re.I)
+_POST_ASK = re.compile(r"\b(post|tweet|share|publish|upload|reel|linkedin|twitter|instagram|facebook|threads)\b|\bon x\b",
+                       re.I)
+_SOCIAL_HOST = re.compile(r"(^|\.)(x\.com|twitter\.com|linkedin\.com|instagram\.com|facebook\.com|threads\.net|"
+                          r"bsky\.app|reddit\.com)$", re.I)
+ATTACHED: dict[str, set[str]] = {}   # site -> media files uploaded into its composer (cleared when a post goes out)
+
+
+def _site(url_or_host: str) -> str:
+    host = (urlparse(url_or_host).netloc if "//" in (url_or_host or "") else url_or_host or "").lower()
+    host = re.sub(r"^(www\.|mobile\.)", "", host)
+    return "x.com" if host == "twitter.com" else host
+
+
+def wanted_media() -> list[str]:
+    """File names of the video/photo the user asked to post with, from their latest posting request ("go on" and
+    the like are skipped; a newer request without a file means none)."""
+    from .. import answers
+    for said in reversed(answers.RECENT_USER[-4:]):
+        paths = _MEDIA_PATH.findall(said or "")
+        if paths:
+            return list(dict.fromkeys(Path(p.replace("/", "\\")).name.lower() for p in paths))
+        if _POST_ASK.search(said or ""):
+            return []
+    return []
+
+
+def missing_media(url: str) -> list[str]:
+    site = _site(url)
+    if not site or not _SOCIAL_HOST.search(site):
+        return []
+    have = ATTACHED.get(site, set())
+    return [name for name in wanted_media() if name not in have]
+
+
+def _media_first(url: str, verb: str) -> str | None:
+    missing = missing_media(url)
+    if not missing:
+        return None
+    return (f"{verb}: the user wants {', '.join(missing)} in this post, and it isn't attached yet. Attach the media "
+            "FIRST, then the text: browser_upload it on the site's upload button (LinkedIn: 'Video' or 'Photo' in the "
+            "post box, then 'Upload from computer', then Next; X: the composer's media button), wait until it has "
+            "finished processing, then type the text. If it can't be attached, stop and tell the user. Never post "
+            "without the file they gave.")
+
+
+def _note_composed(url: str, item: dict | None, text: str, replace: bool = True) -> None:
+    """Text typed into a social site's post editor: saved with the post when it goes out, and checked against the
+    same text posted before (posts with a video are typed, not opened with social_compose)."""
+    if not _is_editor(item) or not _SOCIAL_HOST.search(_site(url)):
+        return
+    host = urlparse(url).netloc.lower()
+    LAST_COMPOSE[host] = str(text) if replace else LAST_COMPOSE.get(host, "") + str(text)
+
+
 def _upload_precheck(args) -> str | None:
     """A resume tailored for one company must not be uploaded to another company's application."""
-    if args.get("any_resume"):
+    if args.get("any_resume") and _user_allowed_any_resume():
         return None
     from .resume import tailored_for
     info = tailored_for(args.get("file_path") or "") or {}
@@ -1558,6 +1794,7 @@ def browser_click(element_id: int | None = None, text: str | None = None, double
             from .. import outbox
             host = urlparse(before).netloc.lower()
             outbox.record_post(host, LAST_COMPOSE.pop(host, ""))
+            ATTACHED.pop(_site(before), None)
         else:
             result += _record_submitted(before, _current().url, result)
     elif isinstance(result, str) and ("RESULT: UNCONFIRMED" in result or "RESULT: NOT SUBMITTED" in result):
@@ -1575,7 +1812,12 @@ def browser_click(element_id: int | None = None, text: str | None = None, double
     "label": P("string", "Alternatively, the field's label"),
 }, required=["text"], risk=_type_risk, precheck=_type_precheck, group="browser")
 def browser_type(text: str, element_id: int | None = None, clear: bool = True, submit: bool = False, label: str | None = None):
-    return _run("type_text", element_id, text, clear, submit, label)
+    backend = _current()
+    target = backend.find_item(element_id, label if element_id is None else None)
+    result = _run("type_text", element_id, text, clear, submit, label)
+    if isinstance(result, str) and result.startswith("Typed"):
+        _note_composed(backend.url, target, text, replace=clear)
+    return result
 
 
 @tool("browser_select", "Choose an option in a dropdown.", {
@@ -1601,7 +1843,10 @@ def browser_check(element_id: int, checked: bool = True):
 }, required=["element_id", "file_path"], risk=lambda a: (CONFIRM, f"Upload {a.get('file_path')} to {_host()}"),
       precheck=_upload_precheck, group="browser")
 def browser_upload(element_id: int, file_path: str, any_resume: bool = False):
-    return _run("upload", element_id, file_path)
+    result = _run("upload", element_id, file_path)
+    if isinstance(result, str) and result.startswith("Uploaded "):
+        ATTACHED.setdefault(_site(_current().url), set()).add(Path(file_path).name.lower())
+    return result
 
 
 @tool("browser_press", "Press a keyboard key or shortcut (Enter, Escape, Tab, PageDown, Control+Enter...).", {
@@ -1755,6 +2000,9 @@ def _compose_precheck(args) -> str | None:
     if same:
         return (f"NOT OPENED: exactly this text was already posted on {host} on {same.get('time', '')[:16]}. Posting it "
                 "again looks like spam. Write a new post, or tell the user it's already up.")
+    first = _media_first("https://" + host + "/", "NOT OPENED (the composer would start with the text)")
+    if first:
+        return first + " Open the site itself instead (e.g. https://x.com/home or https://www.linkedin.com/feed/)."
     return None
 
 
@@ -1810,6 +2058,7 @@ def browser_fill(fields: dict):
         return "ERROR: fields must be an object like {\"12\": \"value\"}"
     backend = _current()
     allowed, problems, captchas = {}, [], []
+    media_files = []
     for raw_id, value in fields.items():
         try:
             item = backend.find_item(int(str(raw_id).strip("[] ")))
@@ -1818,17 +2067,42 @@ def browser_fill(fields: dict):
         if captcha_problem(item):
             captchas.append(raw_id)
             continue
+        if item and item.get("tag") == "input" and item.get("type") == "file" and _MEDIA_PATH.search(str(value)):
+            media_files.append(Path(str(value)).name.lower())
         problem = answer_problem(item, value)
         if problem:
             problems.append(problem)
         else:
             allowed[raw_id] = value
+    if not media_files and any(_is_editor(backend.find_item(_int_or_none(k))) for k in allowed):
+        first = _media_first(backend.url, "NOT FILLED")
+        if first:
+            return first
     held = _needs_answers(problems, "NOT FILLED") + "\n" if problems else ""
     if captchas:
         held += captcha_problem({"label": "captcha"}) + "\n"
     if not allowed:
         return held.strip()
-    return held + _run("fill_many", allowed)
+    result = _run("fill_many", allowed)
+    if isinstance(result, str) and result.startswith("Filled"):
+        if media_files:
+            ATTACHED.setdefault(_site(backend.url), set()).update(media_files)
+        for raw_id, value in allowed.items():
+            _note_composed(backend.url, backend.find_item(_int_or_none(raw_id)), str(value))
+    return held + result
+
+
+def _int_or_none(value):
+    try:
+        return int(str(value).strip("[] "))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_editor(item: dict | None) -> bool:
+    """A text box people write a post/message in (not a search field, and not a plain input like a login email)."""
+    return bool(item) and not is_search_field(item) and item.get("tag") != "input" and bool(
+        item.get("editable") or item.get("tag") == "textarea" or item.get("role") == "textbox")
 
 
 @tool("browser_type_secret", "Type a SAVED username or password (from the vault) into a field, without you seeing it. "

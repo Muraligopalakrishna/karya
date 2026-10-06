@@ -394,6 +394,98 @@ def test_find_jobs_boosts_recently_funded_companies(monkeypatch):
     assert top["company"] == "Pandektes" and "recently raised" in top["why"] and "Series A" in top["funding"]
 
 
+# ------------------------------------------------------------------ the next session doesn't redo the last one
+# The user: "it has to remember what companies it has applied and for next session to not go and do the same thing
+# search same companies again".
+ASHBY = "https://jobs.ashbyhq.com/"
+
+
+def _pm(company, url, title="Product Manager"):
+    return {"source": f"{company} careers (Ashby)", "title": title, "company": company, "location": "Remote",
+            "posted": _days_ago(3), "url": url, "ats": "ashby", "direct": True}
+
+
+def test_find_jobs_leaves_out_what_the_user_already_applied_to(monkeypatch):
+    from karya import answers
+    monkeypatch.setattr(answers, "RECENT_USER", ["find product manager jobs"])
+    northwind = ASHBY + "northwind/0a1b2c3d-1111-4222-8333-444455556666"
+    rows = [_pm("Northwind", northwind), _pm("Northwind", ASHBY + "northwind/11111111-2222-3333-4444-555555555555", "Product Lead"),
+            _pm("Contoso AI", ASHBY + "contoso/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),        # same board, other name
+            _pm("Fresh Co", ASHBY + "freshco/99999999-8888-7777-6666-555555555555")]
+    _all_sources(monkeypatch, rows)
+    monkeypatch.setattr(S, "details", lambda url: None)
+    J.track_application("Northwind", "Product Manager (Payments)", northwind, "applied")
+    J.track_application("Contoso", "Product Manager", ASHBY + "contoso/0f0e0d0c-aaaa-4bbb-8ccc-ddddeeeeffff", "applied")
+    J.track_application("Saved Inc", "Product Manager", ASHBY + "saved/1", "saved")          # only saved: not applied
+    out = J.find_jobs(query="product manager, product lead", locations=["Remote"], sources=["workday"])
+    assert [j["company"] for j in out["jobs"]] == ["Fresh Co"]
+    note = out["already_applied"]
+    assert "1 job(s) the user already applied to" in note and "Northwind" in note and "Contoso" in note
+    assert "include_applied_companies=true" in note
+    # asked for: the companies come back, but the job already applied to never does
+    again = J.find_jobs(query="product manager, product lead", locations=["Remote"], sources=["workday"],
+                        include_applied_companies=True)
+    urls = {j["url"] for j in again["jobs"]}
+    assert northwind not in urls and len(urls) == 3
+    # naming the company in the request also shows it
+    monkeypatch.setattr(answers, "RECENT_USER", ["show me Contoso's product jobs"])
+    named = J.find_jobs(query="product manager", locations=["Remote"], sources=["workday"])
+    assert {j["company"] for j in named["jobs"]} == {"Contoso AI", "Fresh Co"}
+
+
+def test_old_applications_only_block_the_same_job(monkeypatch):
+    J.track_application("Tailspin", "Product Manager I", "https://jobs.lever.co/tailspin/8623c195-f912-4d87-952f-7114cd258413")
+    data = J.applications_store.load()
+    data["applications"][-1]["created"] = "2025-01-02 10:00"                       # long ago
+    J.applications_store.save(data)
+    memory = J.applied_memory()
+    assert "tailspin" not in memory["companies"]                                      # the company is fair game again
+    other = {"company": "Tailspin", "url": "https://jobs.lever.co/tailspin/00000000-1111-2222-3333-444444444444"}
+    kept, hidden = J.skip_applied([other], memory)
+    assert kept == [other] and hidden == {"jobs": 0, "companies": {}}
+    same = {"company": "Tailspin", "url": "https://jobs.lever.co/tailspin/8623c195-f912-4d87-952f-7114cd258413/apply"}
+    assert J.applied_before(same, memory)["role"] == "Product Manager I"           # but never the same job twice
+
+
+def test_submit_is_blocked_for_a_job_already_in_the_tracker(monkeypatch):
+    from karya.tools import browser
+    J.track_application("Northwind", "Product Manager", ASHBY + "northwind/0a1b2c3d-1111-4222-8333-444455556666", "applied")
+
+    class Fake(browser.BrowserSession):
+        def call(self, fn, *a):
+            return fn(*a)
+
+        def form_check(self, element_id):
+            return {"empty": []}
+    fake = Fake()
+    fake.url = ASHBY + "northwind/0a1b2c3d-1111-4222-8333-444455556666/application"
+    fake.items = {4: {"id": 4, "tag": "button", "label": "Submit Application"}}
+    monkeypatch.setattr(browser, "_current", lambda: fake)
+    stop = browser._click_precheck({"element_id": 4})
+    assert stop.startswith("NOT CLICKED: the user already applied") and "Northwind" in stop
+    fake.url = ASHBY + "freshco/99999999-8888-7777-6666-555555555555/application"     # a new job: fine
+    assert browser._click_precheck({"element_id": 4}) is None
+
+
+def test_funded_companies_leave_out_applied_ones(monkeypatch):
+    companies = [{"name": "Northwind", "round": "Series A", "date": _days_ago(5), "score": 9, "why": []},
+                 {"name": "Fresh Co", "round": "Seed", "date": _days_ago(5), "score": 5, "why": []}]
+    monkeypatch.setattr(F, "funded_companies", lambda *a, **k: [dict(c) for c in companies])
+    monkeypatch.setattr(F, "rank_companies", lambda cs, *a: sorted(cs, key=lambda c: -c["score"]))
+    J.track_application("Northwind", "Product Manager", ASHBY + "northwind/0a1b2c3d-1111-4222-8333-444455556666", "applied")
+    out = F.find_funded_companies(query="product manager", with_jobs=False)
+    assert [c["company"] for c in out["companies"]] == ["Fresh Co"] and "Northwind" in out["already_applied"]
+
+
+def test_view_links_need_no_approval():
+    from karya.registry import CRITICAL, SAFE
+    from karya.tools import browser
+    for label in ("View post", "Show 35 posts", "See all comments", "See new posts", "View application"):
+        assert browser.classify_click({"tag": "a"}, label, "https://www.linkedin.com/feed/") == SAFE, label
+    for label in ("Post", "Repost", "Send", "Submit application", "Delete post"):
+        assert browser.classify_click({"tag": "button"}, label, "https://www.linkedin.com/feed/") == CRITICAL, label
+
+
 # ------------------------------------------------------------------ funding news
 HEADLINES = [
     ("At 19, founder raises $11M for Ghost, maker of a $3,499 computer for personal AI", "Ghost", "$11M", None),

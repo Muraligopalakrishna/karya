@@ -214,6 +214,15 @@ def test_how_to_post_instagram_keeps_size_and_audio():
     assert book["login_needed"] is True
 
 
+def test_how_to_post_opens_the_site_before_any_login():
+    # the browser keeps the user's logins: "not in list_accounts" must not be read as "logged out"
+    for platform in ("x", "linkedin", "instagram"):
+        steps = json.loads(_as_json(run_tool("how_to_post", {"platform": platform})))["steps"]
+        assert not steps[0].lower().startswith("list_accounts"), platform
+        assert "does not mean" in steps[0].lower(), platform
+        assert steps[1].lower().startswith("only if the page shows a sign-in screen"), platform
+
+
 def test_how_to_post_x_is_free():
     assert "free" in json.loads(_as_json(run_tool("how_to_post", {"platform": "x"})))["notes"].lower()
     assert "free" in json.loads(_as_json(run_tool("how_to_post", {"platform": "twitter"})))["notes"].lower()  # alias
@@ -224,6 +233,180 @@ def test_instagram_compose_opens_the_site_with_the_steps(monkeypatch):
     monkeypatch.setattr(browser, "_run", lambda method, *a: f"opened {a[0] if a else ''}")
     out = browser.social_compose("instagram", "my caption")
     assert "instagram.com" in out and "Original" in out and "NEXT" in out
+
+
+# ---------------------------------------------------------------- posts with the user's video: media first
+# 2026-10-06: Karya posted the LinkedIn update without the video (the upload button was stuck on "Loading") and
+# called it done. The user: "it has to upload the video first and then type the text".
+def test_how_to_post_attaches_media_before_the_text():
+    for platform in ("x", "linkedin"):
+        steps = json.loads(_as_json(run_tool("how_to_post", {"platform": platform})))["steps"]
+        text = " ".join(steps).lower()
+        assert "media first, then the text" in steps[0].lower(), platform
+        upload = text.index("browser_upload")
+        assert upload < text.index("type the user's text"), platform
+        assert "never post without the file" in json.loads(_as_json(run_tool("how_to_post", {"platform": platform})))[
+            "notes"].lower(), platform
+    linkedin = " ".join(json.loads(_as_json(run_tool("how_to_post", {"platform": "linkedin"})))["steps"])
+    assert "Upload from computer" in linkedin and "Loading" in linkedin and "Next" in linkedin
+
+
+def _composer(monkeypatch, url, items):
+    from karya import answers
+    from karya.tools import browser
+
+    class Fake(browser.BrowserSession):
+        def call(self, fn, *a):
+            return fn(*a)
+
+        def form_check(self, element_id):
+            return {"empty": []}
+    fake = Fake()
+    fake.url, fake.items = url, items
+    monkeypatch.setattr(browser, "_current", lambda: fake)
+    monkeypatch.setattr(browser, "ATTACHED", {})
+    monkeypatch.setattr(answers, "RECENT_USER", [])
+    return browser, answers, fake
+
+
+def test_no_post_and_no_text_until_the_users_video_is_attached(monkeypatch):
+    items = {1: {"id": 1, "tag": "div", "role": "textbox", "editable": True, "label": "Text editor for creating content"},
+             2: {"id": 2, "tag": "button", "label": "Post"},
+             3: {"id": 3, "tag": "input", "type": "search", "label": "Search"},
+             4: {"id": 4, "tag": "input", "type": "email", "role": "textbox", "label": "Email or phone"}}
+    browser, answers, fake = _composer(monkeypatch, "https://www.linkedin.com/feed/", items)
+    answers.RECENT_USER[:] = [r"Post this video on LinkedIn: D:\demo\final_video.mp4 with this text: hello"]
+    assert browser.wanted_media() == ["final_video.mp4"]
+    stop = browser._click_precheck({"element_id": 2})
+    assert stop.startswith("NOT CLICKED (nothing was posted)") and "final_video.mp4" in stop and "FIRST" in stop
+    assert browser._type_precheck({"element_id": 1, "text": "hello"}).startswith("NOT TYPED")
+    assert browser.browser_fill({"1": "hello"}).startswith("NOT FILLED")
+    assert browser._type_precheck({"element_id": 3, "text": "karya"}) is None          # searching is fine
+    assert browser._type_precheck({"element_id": 4, "text": "asha@example.com"}) is None   # so is signing in
+    assert browser._compose_precheck({"platform": "linkedin", "text": "hello"}).startswith("NOT OPENED")
+    # "go on" keeps the same request; once the video is uploaded, text and Post go through
+    answers.RECENT_USER.append("go on")
+    browser.ATTACHED["linkedin.com"] = {"final_video.mp4"}
+    assert browser._type_precheck({"element_id": 1, "text": "hello"}) is None
+    assert browser._click_precheck({"element_id": 2}) is None
+    # the upload counts per site: X still needs its own copy
+    fake.url = "https://x.com/home"
+    fake.items = {2: {"id": 2, "tag": "button", "label": "Post"}}
+    assert "final_video.mp4" in browser._click_precheck({"element_id": 2})
+
+
+def test_typed_post_text_is_saved_and_never_posted_twice(monkeypatch):
+    # posts with a video are typed into the editor (not opened with social_compose), so the same-post check runs at Post
+    from karya import outbox
+    items = {1: {"id": 1, "tag": "div", "role": "textbox", "editable": True, "label": "Post text"},
+             2: {"id": 2, "tag": "button", "label": "Post"}}
+    browser, answers, _ = _composer(monkeypatch, "https://x.com/home", items)
+    monkeypatch.setattr(browser, "LAST_COMPOSE", {})
+    text = "Karya is out today, free and open source for everyone"
+    answers.RECENT_USER[:] = [f"Post this on X: {text}"]
+    monkeypatch.setattr(browser, "_run", lambda method, *a: 'Typed 53 chars into "Post text".')
+    browser.browser_type(text, element_id=1)
+    assert browser.LAST_COMPOSE == {"x.com": text}
+    assert browser._click_precheck({"element_id": 2}) is None
+    outbox.record_post("x.com", text)
+    stop = browser._click_precheck({"element_id": 2})
+    assert stop.startswith("NOT CLICKED (nothing was posted)") and "already posted" in stop
+
+
+def test_text_posts_and_other_files_are_not_held_back(monkeypatch):
+    items = {2: {"id": 2, "tag": "button", "label": "Post"}}
+    browser, answers, _ = _composer(monkeypatch, "https://x.com/home", items)
+    answers.RECENT_USER[:] = ["Write a short post introducing Karya and post it on X"]
+    assert browser.wanted_media() == [] and browser._click_precheck({"element_id": 2}) is None
+    # a newer posting request without a file replaces an older one with a file
+    answers.RECENT_USER[:] = [r"post D:\clips\a.mp4 on X", "now post a text update on LinkedIn: hiring!"]
+    assert browser.wanted_media() == []
+    answers.RECENT_USER[:] = [r"apply with D:\Asha Rao Resume.pdf"]                          # not a video/photo
+    assert browser.wanted_media() == []
+
+
+def test_upload_tracks_the_file_per_site(monkeypatch, tmp_path):
+    video = tmp_path / "Final Video.MP4"
+    video.write_bytes(b"\x00")
+    browser, answers, fake = _composer(monkeypatch, "https://www.linkedin.com/feed/", {})
+    monkeypatch.setattr(browser, "_run", lambda method, *a: "Uploaded Final Video.MP4.\nURL: ...")
+    browser.browser_upload(5, str(video))
+    assert browser.ATTACHED == {"linkedin.com": {"final video.mp4"}}
+    monkeypatch.setattr(browser, "_run", lambda method, *a: "NOT UPLOADED: no file input")
+    fake.url = "https://twitter.com/compose/post"
+    browser.browser_upload(5, str(video))
+    assert "x.com" not in browser.ATTACHED                                   # a failed upload attaches nothing
+
+
+def test_upload_says_why_instead_of_waiting_30s(monkeypatch, tmp_path):
+    from karya.tools import browser
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00")
+    sess = browser.BrowserSession()
+    sess.items = {7: {"id": 7, "tag": "button", "label": "Loading", "disabled": True}}
+    monkeypatch.setattr(sess, "_ensure", lambda: None)
+    monkeypatch.setattr(sess, "_locator", lambda element_id, text=None: (object(), sess.items.get(int(element_id))))
+    out = sess.upload(7, str(video))
+    assert out.startswith("NOT UPLOADED") and "loading" in out.lower() and "reload" in out.lower()
+
+    class Page:     # clicking opens no file picker and the page has no file input
+        frames = []
+
+        def wait_for_timeout(self, ms):
+            pass
+    sess.page = Page()
+    sess.items = {8: {"id": 8, "tag": "button", "label": "Video"}}
+    out = sess.upload(8, str(video))
+    assert out.startswith("NOT UPLOADED") and "Upload from computer" in out and sess.pending_file is None
+
+
+# The user saw Windows' file dialog open with no file in it ("it cannot select the file"): Karya's browser now catches
+# every file picker and chooses the file itself.
+class _Chooser:
+    def __init__(self, page):
+        self.page, self.files = page, []
+
+    def set_files(self, files):
+        self.files.append(files)
+
+
+def _upload_session(monkeypatch, browser):
+    sess = browser.BrowserSession()
+    monkeypatch.setattr(sess, "_ensure", lambda: None)
+    monkeypatch.setattr(sess, "_settle", lambda *a: None)
+    monkeypatch.setattr(sess, "_snapshot", lambda **k: "snapshot")
+
+    class Page:
+        frames = []
+
+        def wait_for_timeout(self, ms):
+            pass
+    sess.page = Page()
+    return sess
+
+
+def test_file_pickers_are_answered_by_karya(monkeypatch, tmp_path):
+    from karya.tools import browser
+    video = tmp_path / "final_video.mp4"
+    video.write_bytes(b"\x00")
+    sess = _upload_session(monkeypatch, browser)
+    picker = _Chooser(sess.page)
+
+    class Button:   # LinkedIn's "Video": the click makes the page open a file picker
+        def click(self, timeout=None):
+            sess._on_file_chooser(picker)
+    sess.items = {3: {"id": 3, "tag": "button", "label": "Video"}}
+    monkeypatch.setattr(sess, "_locator", lambda element_id, text=None: (Button(), sess.items[3]))
+    out = sess.upload(3, str(video))
+    assert out.startswith("Uploaded final_video.mp4") and picker.files == [str(video)] and sess.pending_file is None
+
+    # a plain click opened a picker: it waits (no Windows dialog), and the next upload fills it without clicking
+    waiting = _Chooser(sess.page)
+    sess._on_file_chooser(waiting)
+    assert sess.open_chooser is waiting and "browser_upload" in sess.events[-1]
+    monkeypatch.setattr(sess, "_locator", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no click needed")))
+    out = sess.upload(99, str(video))
+    assert out.startswith("Uploaded final_video.mp4") and waiting.files == [str(video)] and sess.open_chooser is None
 
 
 def _as_json(value):
