@@ -103,7 +103,9 @@ import re as _re  # noqa: E402
 
 GROUP_KEYWORDS = {
     "finance": r"stock|share price|shares|nifty|sensex|market|nasdaq|dow|crypto|bitcoin|invest|ticker|trading|mutual fund|"
-               r"ipo|dividend|gold|forex|rupee|usd|inr|price of",
+               r"ipo|dividend|gold|forex|rupee|usd|inr|price of|sentiment|bullish|bearish|traders?|stocktwits|"
+               r"tradingview|what (do )?people (think|say)|people saying|buzz|hype",
+    "web": r"crawl|scrap(e|ing)|spider|whole (site|website)|every page|all (the )?pages|forum|threads",
     "jobs": r"job|hiring|apply|application|resume|\bcv\b|freelanc|gig|upwork|fiverr|internship|career|interview|recruit|"
             r"proposal|\bbid|find work|client|salary|funded|funding|raised|startups?\b|workday|openings?|vacanc",
     "email": r"e-?mail|\bmail|inbox|gmail|outlook|send .* to|reply",

@@ -690,8 +690,100 @@
     return document.querySelector("input[type=file]");
   }
 
+  // ---------------------------------------------------------------- posts on a social feed (read only)
+  // What people wrote on an X / Twitter search or profile page: text, author, time, link and counts. Used by
+  // market_sentiment to read what traders say; it only reads what the page already shows.
+  const countOf = (label, word) => {
+    const m = (label || "").match(new RegExp("([\\d.,]+)\\s*([KMB])?\\s+" + word, "i"));
+    if (!m) return 0;
+    const n = parseFloat(m[1].replace(/,/g, ""));
+    return Math.round(n * ({ K: 1e3, M: 1e6, B: 1e9 }[(m[2] || "").toUpperCase()] || 1));
+  };
+  K.socialPosts = () => {
+    const out = [];
+    if (/(^|\.)linkedin\.com$/i.test(location.hostname)) {
+      // Two layouts: the older feed (data-urn="urn:li:activity:...") and the newer one (2026), where a post is a
+      // list item marked componentkey="update-card..." with its text in data-testid="expandable-text-box".
+      const CARD = '[data-urn*="urn:li:activity"], [data-urn*="urn:li:ugcPost"], [data-id*="urn:li:activity"], ' +
+                   '[componentkey^="update-card"]';
+      const BODY = '[data-testid="expandable-text-box"], .update-components-text, .feed-shared-update-v2__description, ' +
+                   '.feed-shared-inline-show-more-text, [data-test-id="main-feed-activity-card__commentary"]';
+      const seenText = new Set();
+      for (const box of document.querySelectorAll(CARD)) {
+        if (box.parentElement && box.parentElement.closest(CARD)) continue;       // a post shared inside another
+        const body = box.querySelector(BODY);
+        const text = body ? clean(body.innerText) : "";
+        if (!text || seenText.has(text.slice(0, 120))) continue;
+        seenText.add(text.slice(0, 120));
+        const urn = box.getAttribute("data-urn") || box.getAttribute("data-id") ||
+                    ((box.outerHTML.match(/urn:li:(activity|ugcPost):\d+/) || [""])[0]);
+        const who = [...box.querySelectorAll('a[href*="/in/"], a[href*="/company/"]')].find((a) => clean(a.innerText));
+        const actor = box.querySelector(".update-components-actor__title, .update-components-actor__name");
+        const author = clean(who ? who.innerText : (actor ? actor.innerText : "")).split("•")[0].trim();
+        const lines = (box.innerText || "").split("\n").map(clean).filter(Boolean).slice(0, 14);
+        const when = (lines.find((l) => /^\d+\s*(s|m|h|d|w|mo|yr|y)\b/i.test(l)) || "").split("•")[0].trim();
+        const profile = who ? who.href.split("?")[0] : "";
+        // The newer layout has no link to the post itself (only behind its menu): link the author's activity,
+        // where the post is listed.
+        const url = urn ? `https://www.linkedin.com/feed/update/${urn}/`
+                        : (/\/in\//.test(profile) ? profile.replace(/\/?$/, "/") + "recent-activity/all/" : profile);
+        let likes = 0;
+        for (const e of box.querySelectorAll("a, button, span")) {
+          const m = clean(e.innerText).match(/^(\d[\d,]*)\s+reactions?\b/i);
+          if (m) { likes = parseInt(m[1].replace(/,/g, ""), 10) || 0; break; }
+        }
+        out.push({ author: author.slice(0, 80), text: text.slice(0, 700), time: when, url, likes, replies: 0,
+                   reposts: 0, views: 0, ad: /\bPromoted\b/i.test(lines.slice(0, 8).join(" ")) });
+      }
+      const login = !out.length && /\/(login|authwall|checkpoint|uas\/login|signup)/.test(location.pathname);
+      return { site: location.hostname, posts: out, login };
+    }
+    if (!/(^|\.)(x|twitter)\.com$/i.test(location.hostname)) return { site: location.hostname, posts: out };
+    for (const art of document.querySelectorAll('article[data-testid="tweet"]')) {
+      const body = art.querySelector('[data-testid="tweetText"]');
+      const text = body ? clean(body.innerText) : "";
+      if (!text) continue;
+      const t = art.querySelector("time");
+      const link = t && t.closest('a[href*="/status/"]');
+      const who = art.querySelector('[data-testid="User-Name"]');
+      const group = art.querySelector('[role="group"][aria-label]');
+      const label = group ? group.getAttribute("aria-label") : "";
+      out.push({
+        author: who ? ((who.innerText.match(/@[A-Za-z0-9_]+/) || [""])[0]) : "",
+        text: text.slice(0, 700),
+        time: t ? t.getAttribute("datetime") || "" : "",
+        url: link ? link.href.split("?")[0] : "",
+        replies: countOf(label, "repl"), reposts: countOf(label, "repost"), likes: countOf(label, "like"),
+        views: countOf(label, "view"),
+        ad: /\bAd\b|Promoted/.test(clean((art.querySelector('[data-testid="placementTracking"]') || {}).innerText || "")),
+      });
+    }
+    const login = !out.length && (/\/(i\/flow\/)?login/.test(location.pathname) ||
+      !!document.querySelector('[data-testid="loginButton"], a[href="/login"]'));
+    return { site: location.hostname, posts: out, login };
+  };
+
+  // A whole page for crawl_site: its text and the links on it. Only reads.
+  K.readPage = (a) => {
+    a = a || {};
+    const links = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll("a[href]")) {
+      const href = el.href;
+      if (!/^https?:/i.test(href) || seen.has(href)) continue;
+      seen.add(href);
+      links.push({ url: href, text: clean(el.innerText || el.getAttribute("aria-label") || "").slice(0, 80) });
+      if (links.length >= 600) break;
+    }
+    const body = document.body ? document.body.innerText : "";
+    const posts = (K.socialPosts().posts || []).filter((p) => !p.ad).slice(0, 40);
+    return { url: location.href, title: document.title, text: body.slice(0, a.max || 60000), links, posts };
+  };
+
   K.act = async (op, a) => {
     a = a || {};
+    if (op === "posts") return K.socialPosts(a);
+    if (op === "readpage") return K.readPage(a);
     if (op === "formcheck") return K.formCheck(a);
     if (op === "formvalues") return K.formValues(a);
     if (op === "mark") return K.markOption(a);

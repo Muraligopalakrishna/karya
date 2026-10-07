@@ -15,6 +15,16 @@
 - **Accounts.** Save logins in Settings, or Karya asks when a site needs one. Passwords are encrypted on your PC with Windows DPAPI and never sent to the AI. Karya types them into the page itself, and only on the matching website. It can also create new accounts for you with strong generated passwords.
 - **Research and outreach.** Web and news search, reading pages, and `find_contacts` (public emails and social links for any website), then personal emails that you approve one by one.
 - **Markets.** Stock prices, history, news and market overview (NSE/BSE, US and more).
+- **What people are saying about a market.** `market_sentiment` reads what traders post about any stock, coin, forex pair, index or topic, all at once:
+  - StockTwits, where traders label their own posts bullish or bearish
+  - the market's subreddits on Reddit
+  - X, searched in Karya's browser with your login
+  - TradingView ideas (long or short)
+  - investor forums: ValuePickr for India, Hacker News for tech
+  - YouTube video titles and the news; LinkedIn posts too, when you ask for them
+
+  You get the crowd's mood with counts per source, the price levels traders mention (targets, stops, support, resistance), what they're talking about, and real quotes with links. It reports opinions, not advice.
+- **Crawl any website.** `crawl_site` goes through a whole site and returns the pages and passages about your topic: forums, blogs, news, docs and company sites. Name a site ("linkedin", "x", "reddit") with your words and it starts at that site's own search. Public sites are read over plain HTTP, following robots.txt. Sites that need a login (LinkedIn, X, Facebook, Instagram) are read in Karya's browser, where you're logged in, a few seconds per page and at most 30 pages per crawl. It only reads: it never clicks, posts, follows or logs in, and it stops at login pages and security checks.
 - **Browser automation** like rtrvr.ai: posting on LinkedIn, X, Reddit and more, filling forms, any site you're logged into. Pages without buttons work too: canvas, maps and game boards (it can play chess on chess.com and lichess).
 - **PC help.** Diagnose and fix problems, manage files, run commands (it asks first).
 - **Websites.** Build, preview and publish to Vercel.
@@ -74,7 +84,7 @@ For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:
   - the same post twice
   - daily limits: 40 emails, 10 posts and 30 applications by default, changeable in Setup
 - Submits, posts and bids come back as `RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED`. `karya_activity` lists what really happened today.
-- 38 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, e.g. `browser,email`, or `all`.
+- 40 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, e.g. `browser,email`, or `all`.
 - Passwords never reach the other AI. Setup has a switch to turn MCP access off.
 - Some apps stop a tool call after a minute. Set a longer tool timeout (Codex: `tool_timeout_sec = 900`) so there's time to approve.
 

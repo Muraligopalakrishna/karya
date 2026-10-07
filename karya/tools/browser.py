@@ -404,6 +404,7 @@ class BrowserSession(_Common):
         self.pending_file: Path | None = None   # the file browser_upload is choosing right now
         self.chooser_used = False
         self.open_chooser = None                # a file picker the page opened on a plain click, waiting for a file
+        self._crawl_page = None                 # crawl_site's own tab (closed when the crawl ends)
 
     def call(self, fn, *args, **kwargs):
         try:
@@ -641,6 +642,83 @@ class BrowserSession(_Common):
                 return self._locator(found["id"])
             return page.get_by_text(text, exact=False).first, None
         raise ValueError("Give element_id (from browser_snapshot) or text.")
+
+    def crawl_read(self, url: str, scrolls: int = 1) -> dict:
+        """One page for crawl_site, in a tab of its own that stays open for the whole crawl (crawl_close closes it),
+        so the user's tab is never touched. Only navigates and reads; never clicks anything."""
+        self._ensure()
+        page = self._crawl_page
+        if page is None or page.is_closed():
+            before = self.page
+            page = self.context.new_page()       # the context's page handler hooks it (dialogs, file pickers)
+            self.events = [e for e in self.events if not e.startswith("A new tab opened")]
+            self.page = before if before is not None and not before.is_closed() else page
+            self._crawl_page = page
+        status = None
+        try:
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            status = resp.status if resp is not None else None
+        except Exception as exc:  # noqa: BLE001 - reported for this page only
+            return {"url": url, "error": str(exc).splitlines()[0][:150]}
+        try:
+            page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:  # noqa: BLE001 - busy pages never go idle
+            pass
+        for _ in range(max(0, int(scrolls))):
+            page.mouse.wheel(0, 2400)            # loads lazy feeds (LinkedIn, X) the way a reader would
+            page.wait_for_timeout(1100)
+        got = page.evaluate(PAGE_CALL_JS, {"fn": "readPage", "args": {"max": 60000}}) or {}
+        got["status"] = status
+        return got
+
+    def crawl_close(self) -> str:
+        page, self._crawl_page = self._crawl_page, None
+        if page is not None and not page.is_closed():
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return "closed"
+
+    def read_feed(self, url: str, scrolls: int = 2, wait_ms: int = 9000) -> dict:
+        """Posts on a feed page (X search results...) read in a tab of its own, which is closed afterwards, so the
+        page the user or the agent is on stays as it is. Only reads; never clicks anything on the feed."""
+        self._ensure()
+        before = self.page
+        page = self.context.new_page()       # the context's page handler hooks it (dialogs, file pickers)
+        self.events = [e for e in self.events if not e.startswith("A new tab opened")]
+        self.page = page        # PAGE_CALL_JS and the dialog handlers act on this tab while it's open
+        posts, seen, login = [], set(), False
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_selector('article[data-testid="tweet"], [data-testid="emptyState"], '
+                                       '[data-urn*="urn:li:activity"], [componentkey^="update-card"], '
+                                       '.search-reusables__no-results, '
+                                       '[data-testid="loginButton"], input[autocomplete="username"]', timeout=wait_ms)
+            except Exception:  # noqa: BLE001 - read what is there
+                pass
+            for n in range(max(1, int(scrolls)) + 1):
+                found = page.evaluate(PAGE_CALL_JS, {"fn": "socialPosts", "args": {}}) or {}
+                login = login or bool(found.get("login"))
+                for post in found.get("posts") or []:
+                    key = post.get("url") or post.get("text")
+                    if key and key not in seen:
+                        seen.add(key)
+                        posts.append(post)
+                if n < scrolls:
+                    page.mouse.wheel(0, 2600)
+                    page.wait_for_timeout(1300)
+            final = page.url
+        finally:
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.page = before if before is not None and not before.is_closed() else (
+                self.context.pages[-1] if self.context.pages else None)
+        return {"url": final, "posts": posts, "login": login or bool(re.search(r"/(login|authwall|checkpoint|"
+                                                                            r"i/flow/login|uas/login)", final))}
 
     def options_of(self, element_id) -> list[str]:
         """The options of one dropdown: open it, read its own list, close it by leaving the field (nothing is chosen;
@@ -1312,6 +1390,57 @@ class ExtensionSession(_Common):
         target = folder / f"page_{time.strftime('%Y%m%d_%H%M%S')}.png"
         target.write_bytes(base64.b64decode(png))
         return f"Saved screenshot: {target}" + (" (visible part of the page only)" if full_page else "")
+
+    def crawl_read(self, url: str, scrolls: int = 1) -> dict:
+        """One page for crawl_site in a Karya tab of its own (opened on the first page, reused, closed by crawl_close)."""
+        first = not getattr(self, "_crawling", False)
+        self._req("open", timeout=60, url=url, new_tab=first)
+        self._crawling = True
+        time.sleep(1.2)
+        for _ in range(max(0, int(scrolls))):
+            self._req("act", frame=0, op="scroll", args={"direction": "down", "pages": 2.5})
+            time.sleep(1.1)
+        got = self._req("act", frame=0, op="readpage", args={"max": 60000}) or {}
+        return got if isinstance(got, dict) else {}
+
+    def crawl_close(self) -> str:
+        if getattr(self, "_crawling", False):
+            self._crawling = False
+            tabs = (self._req("tabs", action="list") or {}).get("tabs") or []
+            active = next((i for i, t in enumerate(tabs) if t.get("active")), None)
+            if active is not None and len(tabs) > 1:
+                self._req("tabs", action="close", index=active)
+        return "closed"
+
+    def read_feed(self, url: str, scrolls: int = 2, wait_ms: int = 9000) -> dict:
+        """Posts on a feed page (X search...) in a new Karya tab, closed afterwards. Only reads."""
+        self._req("open", timeout=60, url=url, new_tab=True)
+        posts, seen, login = [], set(), False
+        try:
+            deadline = time.time() + wait_ms / 1000
+            while True:
+                found = self._req("act", frame=0, op="posts", args={}) or {}
+                if found.get("posts") or found.get("login") or time.time() > deadline:
+                    break
+                time.sleep(1.0)
+            for n in range(max(1, int(scrolls)) + 1):
+                if n:
+                    found = self._req("act", frame=0, op="posts", args={}) or {}
+                login = login or bool(found.get("login"))
+                for post in found.get("posts") or []:
+                    key = post.get("url") or post.get("text")
+                    if key and key not in seen:
+                        seen.add(key)
+                        posts.append(post)
+                if n < scrolls:
+                    self._req("act", frame=0, op="scroll", args={"direction": "down", "pages": 2.5})
+                    time.sleep(1.3)
+        finally:
+            tabs = (self._req("tabs", action="list") or {}).get("tabs") or []
+            active = next((i for i, t in enumerate(tabs) if t.get("active")), None)
+            if active is not None and len(tabs) > 1:
+                self._req("tabs", action="close", index=active)
+        return {"url": url, "posts": posts, "login": login}
 
     def tabs(self, action="list", index=None, url=None):
         if action == "new":

@@ -30,7 +30,7 @@ DEFAULT_TOOLS = (
     "browser_check", "browser_upload", "browser_press", "browser_scroll", "browser_read_text", "browser_screenshot",
     "browser_tabs", "browser_click_at", "browser_drag", "browser_move_piece", "how_to_post", "social_compose",
     "list_accounts", "request_credentials", "browser_type_secret", "vault_new_password",
-    "web_search", "fetch_url", "find_contacts",
+    "web_search", "fetch_url", "find_contacts", "crawl_site", "market_sentiment",
     "send_email", "read_emails", "get_email",
     "find_jobs", "find_funded_companies", "get_job_details", "get_application_profile", "track_application", "tailor_resume",
     "apply_autofill", "import_resume",
