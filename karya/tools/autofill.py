@@ -27,7 +27,9 @@ TEXT_FIELDS = (
     ("github", r"git\s*hub"),
     ("portfolio", r"portfolio|personal (web)?site|^\W*website\b|other website|\bblog\b"),
     ("location", r"^\W*(current |your )?(location|city)\b|\bcity of residence\b|current (city|location)|"
-                 r"where are you (based|located)"),
+                 r"where are you (based|located)|what is your (current )?location"),
+    ("country", r"^\W*(your |current )?country( of residence)?\W*$|what is your (current )?country|"
+                r"country (you live in|of residence)"),
 )
 _COMPILED = [(field, re.compile(pattern, re.I)) for field, pattern in TEXT_FIELDS]
 # someone else's details, or a part of the field that isn't the value itself
@@ -120,11 +122,28 @@ def _profile_value(it: dict, profile: dict) -> str | None:
             continue
         if field in _NOT_THE_VALUE and _NOT_THE_VALUE[field].search(text):
             return None
-        value = str(profile.get(field) or "").strip()
+        if field == "country":
+            value = country_of(profile) or ""
+        else:
+            value = str(profile.get(field) or "").strip()
         if field in ("linkedin", "github", "portfolio") and not _URL.match(value):
             return None
         return value or None
     return None
+
+
+def country_of(profile: dict) -> str | None:
+    """The user's country: their profile's, the end of "City, Country", or their resume's location ("India")."""
+    for place in (profile.get("country"), profile.get("location")):
+        if place and ("," in str(place) or str(place).strip().lower() in _COUNTRIES):
+            return str(place).split(",")[-1].strip()
+    from .resume import load_master
+    place = str((load_master() or {}).get("location") or "")
+    return place.split(",")[-1].strip() or None
+
+
+_COUNTRIES = {"india", "united states", "usa", "united kingdom", "uk", "canada", "germany", "singapore", "australia",
+              "united arab emirates", "uae", "netherlands", "ireland", "france", "japan"}
 
 
 def _known_answer(question: str) -> str | None:
@@ -263,7 +282,8 @@ def plan(items: list[dict], profile: dict, resume: str | None, page_text: str = 
     for it in fields:
         if it["id"] in inside or str(it["id"]) in fills:
             continue                      # employment blocks are filled from the work history above
-        if _choice(it) or not _empty(it):
+        wrong = not _empty(it) and bool(B.shape_problem(it, it.get("value")))   # e.g. a city typed into "Full name"
+        if _choice(it) or (not _empty(it) and not wrong):
             continue
         if it.get("type") == "file" or (it.get("tag") == "button" and _RESUME.search(_text(it))):
             continue
@@ -279,7 +299,10 @@ def plan(items: list[dict], profile: dict, resume: str | None, page_text: str = 
         if (it.get("role") == "combobox" or B.wants_pick(it)) and len(value) > 40:
             continue                      # a sentence the user wrote elsewhere is not one of this list's options
         if it.get("tag") == "select":
-            value = pick_option(it.get("options") or [], value)
+            picked = pick_option(it.get("options") or [], value)
+            if picked is None and re.search(r"location|country|where", _text(it), re.I):
+                picked = pick_option(it.get("options") or [], country_of(profile) or "")   # a list of countries
+            value = picked
             if value is None:
                 continue
         if B.answer_problem(it, value) or B.captcha_problem(it):

@@ -208,7 +208,7 @@
       if (el.isContentEditable) { it.editable = true; it.value = clean(el.innerText).slice(0, 80); }
       if (tag === "select") {
         const o = el.options[el.selectedIndex]; it.value = o ? clean(o.text) : "";
-        it.options = Array.from(el.options).slice(0, 25).map((o) => clean(o.text).slice(0, 40));
+        it.options = Array.from(el.options).slice(0, 300).map((o) => clean(o.text).slice(0, 40));
         if (el.required) it.required = true;
       }
       if (tag === "a") it.href = (el.getAttribute("href") || "").slice(0, 100);

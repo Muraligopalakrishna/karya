@@ -251,3 +251,37 @@ def test_ask_user_refuses_password_questions():
     agent.ask = lambda request: (_ for _ in ()).throw(AssertionError("the card must not be shown"))
     out = asyncio.run(agent._ask_user("c1", {"questions": ["Password (create a strong one)", "Notice period"]}))
     assert out.startswith("NOT ASKED") and "request_credentials" in out
+
+
+# ---------------------------------------------------------------- Lever / Paytm (2026-10-08)
+def test_mixed_up_values_are_refused_and_autofill_fixes_them(page):
+    fake, _ = page
+    fake.form[1]["value"] = "Noida, Uttar Pradesh"          # the AI put the location into "First Name"
+    fake.form[7]["value"] = "Asha Rao"                      # ...and the name into "LinkedIn Profile"
+    assert "isn't the user's name" in browser.shape_problem({"tag": "input", "label": "Full name ✱"}, "Noida, Uttar Pradesh")
+    assert "isn't a LinkedIn link" in browser.answer_problem(fake.form[7], "Asha Rao")
+    assert browser.answer_problem(fake.form[7], "https://www.linkedin.com/in/asha-rao") is None
+    autofill.apply_autofill()
+    assert fake.filled["First Name"] == "Asha" and fake.filled["LinkedIn Profile"].endswith("/asha-rao")
+
+
+def test_a_country_list_gets_the_users_country(page):
+    fake, _ = page
+    fake.form[12] = {"id": 12, "tag": "select", "label": "What is your location?", "value": "Select...",
+                     "options": ["Select...", "Afghanistan", "Albania"] + ["Country %d" % n for n in range(60)] + ["India"]}
+    autofill.apply_autofill()
+    assert fake.filled["What is your location?"] == "India"
+    line = browser._fmt(fake.form[12])
+    assert "(+52 more; browser_select with the option's text, e.g. India)" in line
+
+
+def test_new_questions_after_a_choice_are_autofilled(page, monkeypatch):
+    fake, _ = page
+    calls = []
+    monkeypatch.setattr(autofill, "run", lambda resume_path="": calls.append(1) or "AUTOFILL: filled 2 field(s) in one step: x.")
+    before = set(fake.items or fake.form)
+    fake.items = {**{i: dict(it) for i, it in fake.form.items()},
+                  99: {"id": 99, "tag": "input", "type": "text", "label": "PAN number"}}
+    out = browser._more_fields(before)
+    assert calls and out.startswith("\n\nNEW FIELDS APPEARED. AUTOFILL: filled 2")
+    assert browser._more_fields(set(fake.items)) == ""                        # nothing new: nothing runs

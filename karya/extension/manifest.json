@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Karya Browser Link",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Lets your Karya agent (running on this PC) work in its own tabs of your Chrome. Sending, posting and submitting still need your approval in Karya.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuPtJfpKcqGpSF/JPr4TD1M1bfmxpixiOVfnLSbWy4wqnWvKSTsIU3ZS5QjbCkvCJufO7NIgoPZ9iooYua9S0F2TDe6+Vurg9PeWZND6blhHkyT+iOdxZ5ukiyvNgYlo9SZTNQpBudDGPIcUqP50lvBbyXiNQNtOq/derZDupwFAy/L4emDd3Qkdt3GjY0jRHTct66qne7oEFKbbvWMFCCCu4Y/22tOOhZwzO1J4ySIlPgWxaA0Wmx5ZIm7Pw5H8dIGcSOUzuO21bojVTz3JEkXPtkEWXJSps2xcgvQn/jx+ydpAuYZ1GX98luAIqY7vgJANy7LQRyuChGCwa1AGdLwIDAQAB",

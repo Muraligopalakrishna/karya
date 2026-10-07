@@ -249,6 +249,20 @@ def _pieces_text(pieces: dict) -> str:
     return "; ".join(f"{side}: {' '.join(items)}" for side, items in sides.items() if items)
 
 
+def _likely_option(options: list) -> str:
+    """The option in a long list that matches where the user lives (their country or city), else the 13th one."""
+    try:
+        from ..memory import memory_store
+        place = str(memory_store.load().get("profile", {}).get("location") or "").lower()
+    except Exception:  # noqa: BLE001
+        place = ""
+    words = [w for w in re.findall(r"[a-z]{3,}", place)]
+    for opt in options:
+        if str(opt).strip().lower() in words:
+            return str(opt)
+    return str(options[min(12, len(options) - 1)])
+
+
 def _fmt(it: dict) -> str:
     if it.get("area"):
         line = f"[{it['id']}] area {it['tag']} \"{it.get('label', '')}\" {it.get('size', '')}"
@@ -276,7 +290,10 @@ def _fmt(it: dict) -> str:
     if "checked" in it:
         line += " [x]" if it["checked"] else " [ ]"
     if it.get("options"):
-        line += " options=" + "|".join(it["options"][:12])
+        opts = it["options"]
+        line += " options=" + "|".join(opts[:12])
+        if len(opts) > 12:
+            line += f" (+{len(opts) - 12} more; browser_select with the option's text, e.g. {_likely_option(opts)})"
     if it.get("href") and not it["href"].startswith("javascript"):
         line += f" -> {it['href'][:60]}"
     if it.get("question"):
@@ -1667,10 +1684,60 @@ def _is_choice(item: dict) -> bool:
     return item.get("tag") in ("button", "a") or item.get("role") in _CHOICE_ROLES or item.get("type") in ("radio", "checkbox")
 
 
+# A value that can't belong in its field: the AI used the id of the field next to it (2026-10-08, Paytm: "Noida" went
+# into "Full name", the name into "LinkedIn URL", the email into "Github URL"). Checked by the field's own label.
+_SHAPES = (
+    (re.compile(r"e-?mail", re.I), re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.I), "an email address"),
+    (re.compile(r"linked\s*in", re.I), re.compile(r"linkedin\.com", re.I), "a LinkedIn link"),
+    (re.compile(r"git\s*hub", re.I), re.compile(r"github\.com", re.I), "a GitHub link"),
+    (re.compile(r"\b(url|website|web site|portfolio)\b", re.I), re.compile(r"^\S+\.[a-z]{2,}(/\S*)?$", re.I), "a web link"),
+)
+_PHONE_FIELD = re.compile(r"\b(phone|mobile|whatsapp|contact (number|no))\b", re.I)
+_NAME_FIELD = re.compile(r"^\W*(your |full |legal |first |last |given |family |sur)?name\W*$|^\W*(first|last)\W*$", re.I)
+_SOMEONE_ELSE = re.compile(r"refer|reference|emergency|manager|supervisor|recruiter|company|employer|school|"
+                           r"universit|college|spouse|parent|father|mother|guardian|friend|relative|nominee", re.I)
+
+
+def shape_problem(item: dict | None, value) -> str | None:
+    """A text value that can't be right for this field (by its label), with a hint about the likely mix-up."""
+    if not item or item.get("tag") not in ("input", "textarea") or (item.get("type") or "") in (
+            "checkbox", "radio", "file", "hidden", "submit", "button", "number", "date", "month"):
+        return None
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    label = re.sub(r"[✱*]", " ", str(item.get("label") or "")).strip()
+    if _SOMEONE_ELSE.search(label) or re.search(r"\?|code|extension|\bor\b", label, re.I):
+        return None                   # someone else's details, a question, or "Email or phone" (either fits)
+    hint = (f'"{label[:50]}": "{text[:40]}" isn\'t {{what}}. You probably used this field\'s id for the field next to '
+            "it: take the id from the line with this label in the latest snapshot")
+    if label and _NAME_FIELD.match(label):
+        try:
+            from ..memory import memory_store
+            name = str(memory_store.load().get("profile", {}).get("name") or "")
+        except Exception:  # noqa: BLE001
+            name = ""
+        mine = set(re.findall(r"[a-z]+", name.lower()))
+        got = set(re.findall(r"[a-z]+", text.lower()))
+        if mine and got and not got & mine:
+            return hint.format(what="the user's name")
+        return None
+    if label and _PHONE_FIELD.search(label):
+        digits = re.sub(r"\D", "", text)
+        return None if len(digits) >= 7 and not re.search(r"[A-Za-z@]", text) else hint.format(what="a phone number")
+    for field, ok, what in _SHAPES:
+        if label and field.search(label) and not (what == "a web link" and re.search(r"e-?mail|linked\s*in|git\s*hub", label, re.I)):
+            return None if ok.search(text) else hint.format(what=what)
+    return None
+
+
 def answer_problem(item: dict | None, value) -> str | None:
     """Why this value may not go into this field (a guess at something only the user knows), or None."""
     if not item:
         return None
+    shape = shape_problem(item, value)
+    if shape:
+        return shape
     from .. import answers
     from . import work_history
     try:   # a job's start/end date: only the date the user gave for that job (2026-10-07: invented dates were typed)
@@ -2124,7 +2191,28 @@ def browser_type(text: str, element_id: int | None = None, clear: bool = True, s
     "option": P("string", "Visible option text"),
 }, required=["element_id", "option"], precheck=_select_precheck, group="browser")
 def browser_select(element_id: int, option: str):
-    return _run("select", element_id, option)
+    before = set(_current().items)
+    result = _run("select", element_id, option)
+    return result + _more_fields(before) if isinstance(result, str) and result.startswith("Selected") else result
+
+
+def _more_fields(before: set) -> str:
+    """While applying: an answer made the form show more questions (Lever: "India" opens the India-specific ones).
+    Autofill fills the new ones now, so the AI only answers what's left."""
+    from .. import apply_queue
+    backend = _current()
+    fresh = [i for i, it in backend.items.items() if i not in before and it.get("tag") in ("input", "select", "textarea")]
+    if not fresh:
+        return ""
+    job = apply_queue.job_for_page(backend.url)
+    if not job or job.get("status") != "pending":
+        return ""
+    from . import autofill
+    try:
+        note = autofill.run()
+    except Exception:  # noqa: BLE001 - only a shortcut
+        return ""
+    return f"\n\nNEW FIELDS APPEARED. {note}" if note else ""
 
 
 @tool("browser_check", "Tick or untick a checkbox/radio/switch.", {
@@ -2390,8 +2478,10 @@ def browser_fill(fields: dict):
         held += captcha_problem({"label": "captcha"}) + "\n"
     if not allowed:
         return held.strip()
+    before = set(backend.items)
     result = _run("fill_many", allowed)
     if isinstance(result, str) and result.startswith("Filled"):
+        result += _more_fields(before)
         if media_files:
             ATTACHED.setdefault(_site(backend.url), set()).update(media_files)
         for raw_id, value in allowed.items():
