@@ -414,3 +414,51 @@ def test_file_pickers_are_answered_by_karya(monkeypatch, tmp_path):
 
 def _as_json(value):
     return value if isinstance(value, str) else json.dumps(value)
+
+
+# ---------------------------------------------------------------- Instagram (2026-10-07: "it doesn't click Post")
+def test_instagram_post_menu_item_opens_the_upload_and_isnt_blocked(monkeypatch):
+    items = {5: {"id": 5, "tag": "a", "label": "Post"}, 6: {"id": 6, "tag": "button", "label": "Share"}}
+    browser, answers, fake = _composer(monkeypatch, "https://www.instagram.com/", items)
+    answers.RECENT_USER[:] = [r"post this reel on instagram: D:\clips\reel.mp4"]
+    assert browser.classify_click(items[5], "Post", fake.url) == "safe"            # only opens the upload window
+    assert browser._click_precheck({"element_id": 5}) is None                     # not "attach the video first"
+    stop = browser._click_precheck({"element_id": 6})
+    assert stop and "reel.mp4" in stop                                             # Share without the video: refused
+    fake.items[7] = {"id": 7, "tag": "textarea", "label": "Add a comment…", "value": "great"}
+    assert browser.classify_click(items[5], "Post", fake.url) == "critical"       # posting a typed comment
+
+
+def test_an_upload_the_page_ignored_is_not_called_uploaded(monkeypatch, tmp_path):
+    video = tmp_path / "reel.mp4"
+    video.write_bytes(b"\x00")
+    browser, answers, fake = _composer(monkeypatch, "https://www.instagram.com/", {})
+    monkeypatch.setattr(browser, "_run", lambda method, *a: 'Uploaded reel.mp4.\nURL: https://www.instagram.com/\n'
+                                                              '[872] button "Select from computer" (question: Drag photos and videos here)')
+    out = browser.browser_upload(873, str(video))
+    assert out.startswith("NOT UPLOADED") and browser.ATTACHED == {}
+
+
+def test_your_chrome_uploads_through_chrome_itself_first(monkeypatch, tmp_path):
+    from karya.tools import browser
+    video = tmp_path / "reel.mp4"
+    video.write_bytes(b"\x00" * 10)
+    calls = []
+
+    def request(method, timeout=45.0, **params):
+        calls.append(method)
+        if method == "upload_native":
+            return {"ok": True, "native": True}
+        return {"ok": True}
+    sess = browser.ext_session
+    monkeypatch.setattr(sess, "_req", request)
+    assert sess._send_file(9, str(video)) == "reel.mp4" and calls == ["upload_native"]   # no page-script copy
+
+    def old_extension(method, timeout=45.0, **params):
+        calls.append(method)
+        if method == "upload_native":
+            raise RuntimeError("unknown operation upload_native")
+        return {"ok": True}
+    calls.clear()
+    monkeypatch.setattr(sess, "_req", old_extension)
+    assert sess._send_file(9, str(video)) == "reel.mp4" and calls == ["upload_native", "act"]   # the old way still works

@@ -940,6 +940,11 @@
     if (op === "upload") {
       const input = fileInputNear(el);
       if (!input) return { ok: false, error: "there is no file upload field on this page" };
+      if (a.mark) {           // Chrome itself will put the file in (a trusted change, like a person choosing it)
+        deepAll("[data-karya-upload]").forEach((e) => e.removeAttribute("data-karya-upload"));
+        input.setAttribute("data-karya-upload", "1");
+        return { ok: true, marked: true };
+      }
       const bytes = Uint8Array.from(atob(a.b64), (c) => c.charCodeAt(0));
       const dt = new DataTransfer();
       dt.items.add(new File([bytes], a.name, { type: a.mime || "application/octet-stream" }));

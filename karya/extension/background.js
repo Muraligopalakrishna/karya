@@ -350,6 +350,33 @@ const ops = {
     return { url: tab.url, title: tab.title, items, next, text: text.slice(0, Math.max(0, Number(text_chars) || 0)) };
   },
 
+  async upload_native({ frame = 0, id, path }) {
+    // Put a file from this PC into the page's file input the way Chrome does when a person picks it: a trusted
+    // change event. Sites like Instagram ignore files set from page script (2026-10-07: the reel never loaded).
+    if (!chrome.debugger || frame !== 0) return { ok: false, error: "native upload unavailable here" };
+    const tabId = await requireTab();
+    const marked = await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a), ["upload", { id, mark: true }]);
+    if (!marked || marked.ok === false) return marked || { ok: false, error: "no file field" };
+    await debuggerOn(tabId);
+    try {
+      const found = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+        expression: `(() => { const walk = (root) => { const f = root.querySelector('[data-karya-upload="1"]');
+          if (f) return f; for (const e of root.querySelectorAll('*')) { if (e.shadowRoot) { const r = walk(e.shadowRoot);
+          if (r) return r; } } return null; }; return walk(document); })()`,
+        returnByValue: false,
+      });
+      const objectId = found && found.result && found.result.objectId;
+      if (!objectId) return { ok: false, error: "the file field went away" };
+      await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", { files: [path], objectId });
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+        expression: "document.querySelectorAll('[data-karya-upload]').forEach((e) => e.removeAttribute('data-karya-upload'))",
+      }).catch(() => null);
+      return { ok: true, native: true };
+    } finally {
+      debuggerIdle();
+    }
+  },
+
   async act({ frame = 0, op, args = {} }) {
     const tabId = await requireTab();
     if (frame === 0 && REAL_MOUSE_OPS.has(op) && chrome.debugger) {

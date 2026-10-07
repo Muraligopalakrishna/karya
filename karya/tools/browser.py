@@ -103,11 +103,28 @@ _SUBMIT_LIKE = re.compile(r"\b(submit|apply|application|finish|complete)\b", re.
 _NAVIGATED = re.compile(r"page changed while|unloaded|navigat|frame with id|frame.*removed|showing error page", re.I)
 
 
+# Instagram's Create menu items. 2026-10-07: Karya took its "Post" item for the final post button and refused it 7
+# times ("attach the video first"), though that item is what opens the upload window.
+_IG_CREATE = re.compile(r"^\W*(post|reel|story|live video)\W*$", re.I)
+
+
+def _comment_typed() -> bool:
+    """A comment box on the page has text in it: then Instagram's "Post" posts that comment."""
+    try:
+        items = list(_current().items.values())
+    except Exception:  # noqa: BLE001
+        return True    # can't tell: treat "Post" as posting
+    return any(re.search(r"comment", f"{it.get('label', '')} {it.get('placeholder', '')}", re.I)
+               and str(it.get("value") or "").strip() for it in items)
+
+
 def classify_click(item: dict | None, label: str, url: str = "") -> str:
     text = (label or "").strip()
     host = urlparse(url or "").netloc.lower()
     if _APPLY_OPENER.search(text) and host and _FORM_HOSTS.search(host) and not re.search(r"submit|send", text, re.I):
         return CONFIRM
+    if _IG_CREATE.match(text) and re.search(r"(^|\.)instagram\.com$", host) and not _comment_typed():
+        return SAFE    # Instagram's Create menu: "Post" only opens the upload window; its final button is "Share"
     if _OPENER.search(text) or _VIEWER.search(text):
         return SAFE
     if _CRITICAL_WORDS.search(text):
@@ -1368,6 +1385,13 @@ class ExtensionSession(_Common):
         path = Path(file_path)
         if not path.is_file():
             raise FileNotFoundError(f"File not found: {path}")
+        try:   # Chrome itself puts the file in: a trusted change, like a person choosing it (Instagram needs this)
+            res = self._req("upload_native", timeout=60, frame=self.frames.get(element_id, 0), id=int(element_id),
+                            path=str(path.resolve()))
+            if isinstance(res, dict) and res.get("ok"):
+                return path.name
+        except RuntimeError:   # an older extension or no debugger: the page-script way below
+            pass
         if path.stat().st_size > self.MAX_UPLOAD:
             raise ValueError(f"{path.name} is bigger than 15 MB")
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -1934,7 +1958,8 @@ def _media_first(url: str, verb: str) -> str | None:
         return None
     return (f"{verb}: the user wants {', '.join(missing)} in this post, and it isn't attached yet. Attach the media "
             "FIRST, then the text: browser_upload it on the site's upload button (LinkedIn: 'Video' or 'Photo' in the "
-            "post box, then 'Upload from computer', then Next; X: the composer's media button), wait until it has "
+            "post box, then 'Upload from computer', then Next; X: the composer's media button; Instagram: Create, then 'Post' "
+            "in its menu, then 'Select from computer'), wait until it has "
             "finished processing, then type the text. If it can't be attached, stop and tell the user. Never post "
             "without the file they gave.")
 
@@ -2118,9 +2143,17 @@ def browser_check(element_id: int, checked: bool = True):
       precheck=_upload_precheck, group="browser")
 def browser_upload(element_id: int, file_path: str, any_resume: bool = False):
     result = _run("upload", element_id, file_path)
+    if isinstance(result, str) and result.startswith("Uploaded ") and _STILL_ASKING.search(result.split("\nURL:", 1)[-1]):
+        return ("NOT UPLOADED: the page is still asking for the file (it didn't take it). Snapshot, then browser_upload "
+                "once more on its 'Select from computer' / upload button. If it fails again, tell the user and stop.\n"
+                + result.split("\n", 1)[-1])
     if isinstance(result, str) and result.startswith("Uploaded "):
         ATTACHED.setdefault(_site(_current().url), set()).add(Path(file_path).name.lower())
     return result
+
+
+# The page still shows its "pick a file" step after an upload: the file didn't go in (Instagram ignored it, 2026-10-07)
+_STILL_ASKING = re.compile(r"Drag photos and videos here|\"Select from computer\"", re.I)
 
 
 @tool("browser_press", "Press a keyboard key or shortcut (Enter, Escape, Tab, PageDown, Control+Enter...).", {

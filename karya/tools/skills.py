@@ -25,8 +25,10 @@ PLAYBOOKS: dict[str, dict] = {
         "steps": [
             "browser_open https://www.instagram.com/. " + SIGNED_IN_FIRST,
             _login_step("instagram.com"),
-            "Click the Create button (the + / 'New post').",
-            "Click 'Post', then 'Select from computer' and browser_upload the file (the full path).",
+            "Click the Create button (the + / 'New post'), then 'Post' in its menu (that only opens the upload "
+            "window; Instagram's final button is 'Share').",
+            "browser_upload the file (full path) on 'Select from computer'. Wait until the crop screen with 'Next' shows; "
+            "if 'Select from computer' is still there, the file didn't take: browser_upload once more, then tell the user.",
             "CROP SCREEN - this is where size is set. Click the crop/aspect icon (two diagonal arrows, bottom-left) and "
             "choose 'Original' so the video/photo keeps its real size and isn't cut to a square. Do NOT leave it on 1:1.",
             "For a video, DON'T mute it: leave the sound/audio on (don't toggle the speaker off and don't replace the "

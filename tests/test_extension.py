@@ -225,6 +225,13 @@ class FakeExtension:
         if method == "act":
             return pg.evaluate("async (a) => {\n" + browser.PAGE_JS + "\nreturn await window.__karya.act(a.op, a.args);\n}",
                                {"op": p["op"], "args": p.get("args") or {}})
+        if method == "upload_native":   # like Chrome's DOM.setFileInputFiles on the input page.js marked
+            marked = pg.evaluate("async (a) => {\n" + browser.PAGE_JS + "\nreturn await window.__karya.act(a.op, a.args);\n}",
+                                 {"op": "upload", "args": {"id": p["id"], "mark": True}})
+            if not marked or marked.get("ok") is False:
+                return marked
+            pg.locator('[data-karya-upload="1"]').set_input_files(p["path"])
+            return {"ok": True, "native": True}
         if method == "text":
             return {"url": pg.url, "title": pg.title(), "text": pg.evaluate("() => document.body.innerText")}
         raise AssertionError(f"unexpected {method}")
