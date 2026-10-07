@@ -5,6 +5,31 @@
   const K = {};
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Pages built from web components (SmartRecruiters, Salesforce, many new ATS forms) keep their fields inside
+  // shadow roots, often nested several deep. Every lookup searches all of them, so a field the snapshot listed is
+  // always found again (2026-10-07: SmartRecruiters' City, phone and date fields all came back "gone").
+  function shadowRoots(root, out) {
+    out = out || [];
+    for (const el of (root || document).querySelectorAll("*")) {
+      if (el.shadowRoot) { out.push(el.shadowRoot); shadowRoots(el.shadowRoot, out); }
+    }
+    return out;
+  }
+  const deepAll = (sel, root) => {
+    const base = root || document;
+    const out = [...base.querySelectorAll(sel)];
+    for (const r of shadowRoots(base)) out.push(...r.querySelectorAll(sel));
+    return out;
+  };
+  const deepOne = (sel, root) => {
+    const base = root || document;
+    const direct = base.querySelector(sel);
+    if (direct) return direct;
+    for (const r of shadowRoots(base)) { const found = r.querySelector(sel); if (found) return found; }
+    return null;
+  };
+  // The element a node sits in, crossing out of a shadow root to its host.
+  const parentOf = (n) => n && (n.parentElement || (n.getRootNode && n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null));
   const SEL = 'a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link],' +
     '[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=option],[role=switch],' +
     '[role=combobox],[role=textbox],[role=searchbox],[role=slider],[contenteditable=""],[contenteditable="true"],' +
@@ -60,8 +85,8 @@
   const NOT_A_QUESTION = /^\d+\s*\/\s*\d+|\bof \d+ characters?\b|^(invalid|error|please (enter|select|fill|provide)|this field is required|required)\b/i;
   function questionNode(el) {
     const option = isOption(el) || shortButton(el);
-    let node = el.parentElement;
-    for (let depth = 0; node && depth < 7; depth++, node = node.parentElement) {
+    let node = parentOf(el);
+    for (let depth = 0; node && depth < 7; depth++, node = parentOf(node)) {
       if (node.tagName === "FORM" || node === document.body) break;
       const others = [...node.querySelectorAll(CONTROL)].filter((c) => c !== el && usable(c) && !(option && isOption(c)));
       if (others.length) break;
@@ -104,7 +129,12 @@
     let t = el.getAttribute("aria-label") || "";
     if (!t && el.labels && el.labels.length) t = el.labels[0].innerText;
     const lb = el.getAttribute("aria-labelledby");
-    if (!t && lb) { const n = document.getElementById(lb.split(" ")[0]); if (n) t = n.innerText; }
+    if (!t && lb) {
+      const rootNode = el.getRootNode && el.getRootNode();
+      const first = lb.split(" ")[0];
+      const n = (rootNode && rootNode.getElementById ? rootNode.getElementById(first) : null) || document.getElementById(first);
+      if (n) t = n.innerText;
+    }
     if (!t && isControl(el) && !(el.tagName === "INPUT" && ["submit", "button", "reset"].includes(el.type))) t = questionOf(el);
     if (!t && !["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) t = el.innerText;
     if (!t) t = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("alt") || "";
@@ -188,6 +218,8 @@
       if (el.getAttribute("aria-invalid") === "true") it.invalid = true;
       if (el.disabled || el.getAttribute("aria-disabled") === "true") it.disabled = true;
       if (!inView(r)) it.offscreen = true;
+      it.y = Math.round(r.top + (window.scrollY || 0));   // where it is on the page (blocks of a form go top to bottom)
+      it.x = Math.round(r.left + (window.scrollX || 0));
       out.push(it);
     }
     // Drawn areas (canvas, SVG, game boards, maps) can't be clicked by label: list them so Karya can click or drag
@@ -422,7 +454,7 @@
     const el = args && args.id != null ? byId(args.id) : null;
     const root = (el && el.closest("form")) || document;
     const empty = [], invalid = [], groups = new Map();
-    root.querySelectorAll(CONTROL).forEach((c) => {
+    deepAll(CONTROL, root).forEach((c) => {
       if (!usable(c) || c.disabled) return;  // file inputs and styled choices are often hidden behind their label
       const q = clean(questionOf(c) || labelOf(c)).slice(0, 90) || "(unnamed field)";
       if (c.getAttribute("aria-invalid") === "true") invalid.push(q);
@@ -443,7 +475,7 @@
     groups.forEach((g) => { if (!g.done) empty.push(g.q); });
     // Required questions answered with buttons (Yes / No): answered when one of them is pressed.
     const choices = new Map();
-    root.querySelectorAll("button, [role=button], [role=radio]").forEach((b) => {
+    deepAll("button, [role=button], [role=radio]", root).forEach((b) => {
       if (!shown(b) || !shortButton(b)) return;
       const node = questionNode(b);
       if (!node || !starred(node)) return;
@@ -461,7 +493,7 @@
     const el = args && args.id != null ? byId(args.id) : null;
     const root = (el && el.closest("form")) || document;
     const out = [];
-    root.querySelectorAll(CONTROL).forEach((c) => {
+    deepAll(CONTROL, root).forEach((c) => {
       if (!usable(c) || c.disabled || c.type === "password") return;
       const q = clean(questionOf(c) || labelOf(c)).replace(/\s*[✱*]\s*$/, "").slice(0, 100) || "(field)";
       let v = "";
@@ -474,7 +506,7 @@
       else v = clean(c.isContentEditable ? c.innerText : c.value);
       if (v) out.push({ q, v: v.slice(0, 200) });
     });
-    root.querySelectorAll("button, [role=button], [role=radio]").forEach((b) => {
+    deepAll("button, [role=button], [role=radio]", root).forEach((b) => {
       if (!shown(b) || !shortButton(b) || !isPressed(b)) return;
       const node = questionNode(b);
       if (node) out.push({ q: tidyQ(node.innerText).replace(/\s*[✱*]\s*$/, "").slice(0, 100), v: clean(b.innerText) });
@@ -483,14 +515,7 @@
   };
 
   // ---------------------------------------------------------------- actions
-  const byId = (id) => {
-    const direct = document.querySelector(`[data-jid="${id}"]`);
-    if (direct) return direct;
-    for (const host of document.querySelectorAll("*")) {
-      if (host.shadowRoot) { const inner = host.shadowRoot.querySelector(`[data-jid="${id}"]`); if (inner) return inner; }
-    }
-    return null;
-  };
+  const byId = (id) => deepOne(`[data-jid="${id}"]`);
   function clickEl(el) {
     el.scrollIntoView({ block: "center", inline: "center" });
     const r = el.getBoundingClientRect();
@@ -510,7 +535,7 @@
     el.focus();
     setter.call(el, value);  // the prototype setter: frameworks like React notice the change
     el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
   }
   function setEditable(el, value, clear) {
     el.focus();
@@ -527,7 +552,7 @@
   }
   const OPTION_SEL = '[role="option"], [role="listbox"] li, .pac-item, [data-option-index], .dropdown-location, ' +
     '[class*="dropdown-results" i] > *, [class*="autocomplete" i] li, [class*="suggestion" i] li, [class*="suggestions" i] > div';
-  const optionNodes = () => [...document.querySelectorAll(OPTION_SEL)]
+  const optionNodes = () => deepAll(OPTION_SEL)
     .filter((o) => shown(o) && clean(o.innerText) && clean(o.innerText).length <= 120 && !o.querySelector("input,select,textarea"));
   // The option that really is what was asked for: exact, starts with it as whole words ("Hyderabad" ->
   // "Hyderabad, Telangana, India"), or contains every typed word ("Hyderabad, India" -> "Hyderabad, Telangana, India").
@@ -553,16 +578,70 @@
   }
   // Karya's own browser clicks suggestions with a real mouse: mark the best one for it.
   K.listOptions = (args) => {
-    const el = document.querySelector(`[data-jid="${args.id}"]`);
-    let box = null;
-    for (const attr of ["aria-controls", "aria-owns"]) {
-      const id = el && el.getAttribute(attr);
-      if (id && (box = document.getElementById(id))) break;
-    }
-    const nodes = box ? [...box.querySelectorAll('[role="option"], [class*="option" i]')].filter((o) => shown(o))
-                      : optionNodes();
+    const el = byId(args.id);
+    const box = ownMenu(el);
+    const nodes = box ? deepAll('[role="option"], [class*="option" i], li', box).filter((o) => shown(o)) : optionNodes();
     const texts = nodes.map((o) => clean(o.innerText).slice(0, 60)).filter((t) => t && !/^no options?\b/i.test(t));
     return [...new Set(texts)].slice(0, 30);
+  };
+  // Custom dropdowns (Instahyre, react-select, SmartRecruiters' spl-select...) draw their options only once they're
+  // open, often as plain list items: the options are what appears after opening it, in its own menu if it names one.
+  const MENU_SEL = OPTION_SEL + ', [role=menuitem], [role=menuitemradio], [role=listbox] > *, [role=menu] li, ' +
+    '[class*="menu" i] li, [class*="dropdown" i] li, [class*="option" i], [class*="choice" i] li, ' +
+    '[class*="choices" i] > *, [class*="select" i] li, [class*="list" i] > li';
+  const menuish = (o, el) => shown(o) && o !== el && !(el && o.contains(el)) && !o.querySelector("input,select,textarea") &&
+    clean(o.innerText) && clean(o.innerText).length <= 80;
+  const menuNodes = (el, root) => deepAll(MENU_SEL, root).filter((o) => menuish(o, el));
+  function ownMenu(el) {
+    if (!el) return null;
+    const rootNode = el.getRootNode ? el.getRootNode() : document;
+    for (const attr of ["aria-controls", "aria-owns"]) {
+      const id = el.getAttribute(attr) || (el.querySelector && (el.querySelector(`[${attr}]`) || {}).getAttribute &&
+                                           el.querySelector(`[${attr}]`).getAttribute(attr));
+      if (!id) continue;
+      const box = (rootNode.getElementById && rootNode.getElementById(id)) || document.getElementById(id) ||
+                  deepOne(`#${CSS.escape(id)}`);
+      if (box) return box;
+    }
+    return null;
+  }
+  function leafOptions(nodes) {   // one node per option: the outermost of nested matches, first of equal texts
+    const set = new Set(nodes);
+    const seen = new Set();
+    return nodes.filter((o) => {
+      for (let p = parentOf(o); p; p = parentOf(p)) if (set.has(p) && clean(p.innerText) === clean(o.innerText)) return false;
+      const t = clean(o.innerText).toLowerCase();
+      if (seen.has(t)) return false;
+      seen.add(t);
+      return true;
+    });
+  }
+  async function openMenu(el) {
+    const before = new Set(menuNodes(el));
+    clickEl(el);
+    if (isControl(el)) el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", keyCode: 40,
+                                                                         bubbles: true, composed: true }));
+    for (let i = 0; i < 12; i++) {
+      await sleep(i ? 150 : 250);
+      const box = ownMenu(el);
+      let found = box ? deepAll('[role="option"], [class*="option" i], li', box).filter((o) => menuish(o, el)) : [];
+      if (!found.length) found = menuNodes(el).filter((o) => !before.has(o));
+      if (!found.length) found = optionNodes().filter((o) => menuish(o, el));
+      if (found.length) return leafOptions(found);
+    }
+    return [];
+  }
+  function closeMenu(el) {
+    if (isControl(el)) { el.blur(); return; }
+    if ((el.getAttribute("aria-expanded") || "") === "true" || menuNodes(el).length) clickEl(el);  // a toggle: click again
+  }
+  K.openOptions = async (a) => {
+    const el = byId(a.id);
+    if (!el) return { ok: false, error: `Element [${a.id}] is gone (the page changed). Take a new browser_snapshot.` };
+    const opts = await openMenu(el);
+    const texts = opts.map((o) => clean(o.innerText).slice(0, 60)).filter((t) => t && !/^no options?\b/i.test(t));
+    closeMenu(el);
+    return { ok: true, options: texts.slice(0, 40) };
   };
   K.markOption = (args) => {
     document.querySelectorAll("[data-karya-opt]").forEach((e) => e.removeAttribute("data-karya-opt"));
@@ -611,19 +690,27 @@
       return { ok: false, error: `[${el.getAttribute("data-jid")}] isn't a dropdown` };
     }
     // An option is a short piece of text that isn't (and doesn't hold) a form field or the dropdown itself.
-    const limit = Math.max(60, clean(option).length * 3);
-    const usable = (o) => shown(o) && o !== el && !o.contains(el) &&
-      !o.querySelector("input,select,textarea,button") && clean(o.innerText).length <= limit;
-    clickEl(el);  // custom dropdown: open it, then click the option
-    for (let i = 0; i < 15; i++) {
-      await sleep(150);
-      const pool = optionNodes().concat([...document.querySelectorAll('[role=menuitem], [role=menuitemradio], [role=listbox] li, ' +
-        '[role=menu] li, [class*="menu" i] li, [class*="dropdown" i] li, [class*="option" i]')]).filter(usable);
-      const best = bestOption(pool, option);
-      if (best) { const text = clean(best.innerText); clickEl(best); return { ok: true, picked: text.slice(0, 80) }; }
+    const opts = await openMenu(el);
+    let best = bestOption(opts, option);
+    if (!best && isControl(el) && el.tagName === "INPUT") {   // a searchable dropdown: type to narrow it, then pick
+      setNative(el, String(option));
+      const res = await K.pick({ value: option, quick: false });
+      if (res.picked) return { ok: true, picked: res.picked };
     }
-    return { ok: false, error: `couldn't find the option "${option}" in that dropdown` };
+    if (best) { const text = clean(best.innerText); clickEl(best); await sleep(200); return { ok: true, picked: text.slice(0, 80) }; }
+    const seen = opts.map((o) => clean(o.innerText).slice(0, 50)).filter(Boolean);
+    closeMenu(el);
+    return { ok: false, error: seen.length ? `no option "${option}" in that dropdown. Its options: ${seen.slice(0, 25).join(" | ")}`
+                                           : `couldn't open that dropdown's list (no options appeared)` };
   }
+
+  // Choosing in a dropdown by its id (Karya's own browser uses this too): a <select>, or a custom one opened and
+  // picked like a person would.
+  K.chooseOption = async (a) => {
+    const el = byId(a.id);
+    if (!el) return { ok: false, error: `Element [${a.id}] is gone (the page changed). Take a new browser_snapshot.` };
+    return await selectOption(el, String(a.option));
+  };
 
   function press(el, key) {
     const target = el || document.activeElement || document.body;
@@ -683,11 +770,12 @@
   function fileInputNear(el) {
     if (el && isFile(el)) return el;
     let node = el;
-    for (let d = 0; node && d < 6; d++, node = node.parentElement) {
-      const found = node.querySelector && node.querySelector("input[type=file]");
+    for (let d = 0; node && d < 8; d++, node = parentOf(node)) {
+      const found = node.querySelector && (node.querySelector("input[type=file]") ||
+                                           (node.shadowRoot && deepOne("input[type=file]", node.shadowRoot)));
       if (found) return found;
     }
-    return document.querySelector("input[type=file]");
+    return deepOne("input[type=file]");
   }
 
   // ---------------------------------------------------------------- posts on a social feed (read only)
@@ -784,6 +872,7 @@
     a = a || {};
     if (op === "posts") return K.socialPosts(a);
     if (op === "readpage") return K.readPage(a);
+    if (op === "openoptions") return await K.openOptions(a);
     if (op === "formcheck") return K.formCheck(a);
     if (op === "formvalues") return K.formValues(a);
     if (op === "mark") return K.markOption(a);

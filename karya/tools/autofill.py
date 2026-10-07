@@ -140,7 +140,7 @@ def _known_answer(question: str) -> str | None:
 def _job_here(url: str) -> dict | None:
     from .. import apply_queue
     from . import jobs
-    return apply_queue.find_by_url(url) or apply_queue.find_by_url(url, jobs=list(jobs.cached_jobs().values()))
+    return apply_queue.job_for_page(url) or apply_queue.find_by_url(url, jobs=list(jobs.cached_jobs().values()))
 
 
 def resume_for(company: str) -> str | None:
@@ -205,15 +205,64 @@ def _value_for(it: dict, profile: dict) -> str | None:
     return value
 
 
+def history_plan(items: list[dict]) -> tuple[dict, dict, set]:
+    """The employment/education blocks of a form, filled from the user's work history (their own dates only):
+    ({id: value}, {id: name}, ids of every field inside such a block)."""
+    from . import work_history as W
+    people = W.entries()
+    fills, names, inside = {}, {}, set()
+    seen: dict = {}
+    for block in W.blocks(items):
+        if not W.is_history_block(block):
+            continue
+        if block.get("current"):
+            position = 0                     # "Current company": the latest job
+        else:
+            position = seen.get(block.get("entity"), 0)
+            seen[block.get("entity")] = position + 1
+        fields = ([("anchor", block["anchor"])] if block.get("anchor") else []) + block["fields"]
+        inside.update(it["id"] for _, it in fields)
+        entry = W.match_entry(block, people, position)
+        if entry is None:
+            continue
+        end = W.known_date(entry, "end")
+        for role, it in fields:
+            if it.get("disabled") or (not _empty(it) and role != "current"):
+                continue
+            value = None
+            if role == "anchor":
+                value = entry["name"]
+            elif role in ("title", "degree"):
+                value = entry["title"]
+            elif role == "location":
+                value = entry.get("location") or None
+            elif role == "current":
+                value = "true" if end and end.get("present") and _empty(it) else None
+            elif role.startswith(("start-", "end-")):
+                side, part = role.split("-", 1)
+                if side == "end" and end and end.get("present"):
+                    continue                 # ticked "currently work here" instead
+                value = W.value_for(it, part, W.known_date(entry, side))
+                if value and it.get("tag") == "select":
+                    value = pick_option(it.get("options") or [], value)
+            if value and not B.answer_problem(it, value):
+                fills[str(it["id"])] = value
+                names[str(it["id"])] = f"{_label(it)} ({entry['name'] or entry['title']})"
+    return fills, names, inside
+
+
 def plan(items: list[dict], profile: dict, resume: str | None, page_text: str = "") -> tuple[dict, dict, dict]:
     """What to put where: ({id: value} for browser fields, {id: file} for uploads, {id: name} of what gets filled)."""
     fields = [it for it in items if _field(it)]
-    fills, uploads, names = {}, {}, {}
+    fills, names, inside = history_plan(items)
+    uploads = {}
     job, used = latest_job(), set()
     target = _resume_input(items, page_text)
     if target is not None and resume and _empty(target):
         uploads[target["id"]] = resume
     for it in fields:
+        if it["id"] in inside or str(it["id"]) in fills:
+            continue                      # employment blocks are filled from the work history above
         if _choice(it) or not _empty(it):
             continue
         if it.get("type") == "file" or (it.get("tag") == "button" and _RESUME.search(_text(it))):
@@ -272,6 +321,9 @@ def still_open(backend) -> list[str]:
     except Exception:  # noqa: BLE001 - the page's own required markers still count
         check = {}
     wanted = {_norm(q).replace(" ", "") for q in check.get("empty") or []}
+    from . import work_history as W
+    history = {it["id"] for b in W.blocks(fields) if W.is_history_block(b)
+               for _, it in ([("anchor", b["anchor"])] if b.get("anchor") else []) + b["fields"]}
     lines, seen = [], set()
     for it in fields:
         question = it.get("question") if _choice(it) else (it.get("label") or it.get("question"))
@@ -283,13 +335,21 @@ def still_open(backend) -> list[str]:
             group = [o for o in fields if _choice(o) and o.get("question") == it.get("question")]
             if any(o.get("checked") for o in group) or question in seen:
                 continue
+            seen.add(question)
         elif not _empty(it):
             continue
-        seen.add(question)
-        how = ("the user's own answer: ask_user" if answers.classify(question) else
-               "answer it from the resume and the job" if not _choice(it) else "choose the true option")
-        if (it.get("role") == "combobox" or B.wants_pick(it)) and not it.get("options") and len(lines) < 25 \
-                and hasattr(backend, "options_of") and sum(1 for line in lines if "options=" in line) < 10:
+        if it["id"] in history:
+            how = ("the user's own dates and places: call ask_job_dates if Karya doesn't know them (then they're "
+                   "filled on every form)" if W.date_role(it) or W.field_role(it) in ("location", "current") else
+                   "this job/school block: fill it from the resume (work_history shows what Karya knows)")
+        else:
+            how = ("the user's own answer: ask_user" if answers.classify(question) else
+                   "answer it from the resume and the job" if not _choice(it) else "choose the true option")
+        place = bool(re.search(r"location|city|town|address|country|region", f"{it.get('label', '')} {it.get('name', '')}",
+                               re.I))
+        if it.get("role") == "combobox" and not place and it["id"] not in history and not it.get("options") \
+                and len(lines) < 25 and hasattr(backend, "options_of") and \
+                sum(1 for line in lines if "options=" in line) < 6:
             try:
                 found = backend.call(backend.options_of, it["id"]) or []
             except Exception:  # noqa: BLE001 - the AI can still open it
@@ -390,7 +450,7 @@ def apply_autofill(resume_path: str = ""):
 def after_open(url: str) -> str:
     """Autofill when the page belongs to a job the user picked (opened, Apply clicked, next form page)."""
     from .. import apply_queue
-    job = apply_queue.find_by_url(url)
+    job = apply_queue.job_for_page(url)
     if not job or job.get("status") != "pending":
         return ""
     try:

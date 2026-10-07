@@ -215,7 +215,8 @@ def test_company_and_title_come_from_the_latest_job(page, monkeypatch):
     fake.form[34] = {"id": 34, "tag": "input", "type": "text", "label": "Current Company", "required": True}
     autofill.apply_autofill()
     assert fake.form[30]["value"] == "Acme Labs" and fake.form[31]["value"] == "Founder & Product Lead"
-    assert not fake.form[32].get("value") and not fake.form[33].get("value")    # older jobs / a list: the AI decides
+    assert fake.form[32].get("value") == "Beta"                                  # a second block: the next job
+    assert not fake.form[33].get("value")                                        # a list: the AI picks from it
     assert fake.form[34]["value"] == "Acme Labs"                                 # "current" is always the latest
 
 

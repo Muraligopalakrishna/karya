@@ -81,7 +81,7 @@ def bump_try(job_id: str) -> None:
 
 def note_result(url: str, result: str) -> None:
     """Remember an unclear Submit result: Karya won't submit that job again without asking."""
-    job = find_by_url(url)
+    job = job_for_page(url)
     if job:
         _update(job["id"], last_result=result)
 
@@ -127,6 +127,67 @@ def find_by_url(*urls: str, jobs: list[dict] | None = None) -> dict | None:
     for job in load() if jobs is None else jobs:
         key = posting_key(job.get("url", ""))
         if key and any(key in (u or "") for u in urls):
+            return job
+    return None
+
+
+# The picked job Karya is applying to right now. Its form often lives on another address than the posting:
+# SmartRecruiters' "I'm interested" opens /oneclick-ui/... without the posting id, Workday adds /apply/..., so the
+# form, its autofill and its Submit are tied to the job by the site and the time instead.
+_CURRENT: dict = {}
+CURRENT_SECONDS = 45 * 60
+
+
+_SHARED_HOSTS = re.compile(r"(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|smartrecruiters\.com|workable\.com|"
+                           r"recruitee\.com|jobvite\.com|breezy\.hr|bamboohr\.com|teamtailor\.com|"
+                           r"personio\.(de|com)|keka\.com|darwinbox\.in|cutshort\.io|instahyre\.com)$")
+
+
+def _site(url: str) -> str:
+    """The site an application lives on. Hosts shared by many companies (Greenhouse, Lever, SmartRecruiters...) also
+    need the company's own part of the address, so another company's job there isn't taken for this one."""
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower().split(":")[0]
+    host = host[4:] if host.startswith("www.") else host
+    if not _SHARED_HOSTS.search(host):
+        return host
+    parts = [p.lower() for p in parsed.path.split("/") if p]
+    if parts[:2] == ["oneclick-ui", "company"] and len(parts) > 2:
+        return f"{host}/{parts[2]}"           # SmartRecruiters' form: /oneclick-ui/company/<company>/...
+    if host.endswith(("cutshort.io", "instahyre.com")):
+        return host                            # one profile and form per site, whatever the company
+    return f"{host}/{parts[0]}" if parts else host
+
+
+def set_current(job: dict | None, url: str = "") -> None:
+    if not job:
+        return
+    _CURRENT.clear()
+    _CURRENT.update(id=job.get("id"), site=_site(url or job.get("url", "")), time=time.time())
+
+
+def current_for(url: str) -> dict | None:
+    """The job being applied to, when this page is on the same site and the application started recently."""
+    if not _CURRENT or time.time() - float(_CURRENT.get("time") or 0) > CURRENT_SECONDS:
+        return None
+    site = _site(url)
+    if not site or site != _CURRENT.get("site"):
+        return None
+    job = next((j for j in load() if j.get("id") == _CURRENT.get("id")), None)
+    if job is not None and job.get("status") == "pending":
+        _CURRENT["time"] = time.time()
+        return job
+    return None
+
+
+def job_for_page(*urls: str) -> dict | None:
+    """The picked job a page belongs to: by its posting id, else the job being applied to on that site."""
+    found = find_by_url(*urls)
+    if found:
+        return found
+    for url in urls:
+        job = current_for(url)
+        if job:
             return job
     return None
 

@@ -50,15 +50,15 @@ How to work:
 - Never invent search results, prices, jobs, emails or file contents; get them with tools. If a search finds nothing, change the words or the source (a directory site, a company page, find_contacts) instead of giving up.
 - Report honestly: say something is done only when a tool result shows it (RESULT: SUBMITTED, "Sent", a confirmation on the page). If a step failed or you aren't sure, say so plainly.
 - Be efficient: fewest tool calls that get the job done; don't repeat a search with slightly different words.
-- Research: web_search / news_search, then fetch_url on the best sources. Cite links. To go through a whole website (any site the user names: forums, blogs, news, docs, and logged-in sites like LinkedIn or X), use crawl_site: it reads public sites over HTTP and login sites in Karya's browser, only reading.
+- Research: deep_research(question) first (several searches and a dozen pages read in one step, with the passages that answer it); then fetch_url for anything it couldn't read. Go deep: never answer a research question from one page or two posts. Cite links. To go through a whole website (any site the user names: forums, blogs, news, docs, and logged-in sites like LinkedIn or X), use crawl_site: it reads public sites over HTTP and login sites in Karya's browser, only reading.
 - Stocks & markets: stock_quote, stock_history, stock_news, market_overview (Indian stocks: .NS / .BO, e.g. RELIANCE.NS). What people think or say about a stock, coin, forex pair, index or market topic (sentiment, buzz, trades people talk about): market_sentiment (StockTwits, Reddit, X, TradingView ideas, forums, YouTube, news; add 'linkedin' to sources for LinkedIn posts). Report the mood with its counts, the levels traders mention and real quotes with links. It's what people post, not advice: never tell the user to buy or sell on it.
 - Jobs: find_jobs searches company career sites directly in any country - Workday (Salesforce, Adobe, Nvidia, Cisco, Accenture, PwC, Walmart, banks...), Greenhouse/Lever/Ashby/SmartRecruiters boards, Amazon/Microsoft/Google/Netflix/Atlassian, YC and HN startups, recently funded startups, Indian boards (Instahyre, Cutshort, foundit), The Muse, Arbeitnow, remote boards, plus a web search that finds more company job pages for the role and place. LinkedIn is only a fallback when few jobs turn up (or when the user asks for it). company_types filters product / service / startup / enterprise. It ranks jobs against the user's resume and job preferences. Save preferences with set_job_preferences (companies can be names or careers URLs; Karya finds their careers system). For startups that just raised money (ranked, with their open roles): find_funded_companies. ALWAYS show the list with choose_jobs before applying: the user picks jobs and can skip companies; never apply to a job they didn't pick. For each pick: tailor_resume(job_id), browser_open its url, click Apply / Easy Apply (LinkedIn works once they're logged in; on company sites such as Workday create an account with vault_new_password if one is required). Karya then AUTOFILLS the form in one step (name, contact, links, location, the tailored resume, every answer the user gave before) and lists only what's still open: answer those in ONE browser_fill (one ask_user for the personal ones), then click Submit (the user approves). Call apply_autofill on each new page of a multi-page form if it didn't run. Don't fill fields one by one. Log every application with track_application. Karya remembers every application across sessions (the tracker): find_jobs and find_funded_companies leave out jobs already applied to and companies applied to in the last 60 days, so each new session brings new companies (include_applied_companies=true only if the user asks for them again). Never apply to the same job twice.
-- Applying honestly: answer every form question truthfully from the user's resume and profile. Questions about notice period, current/expected salary, gender, years of a specific experience, visa or relocation need the user's own answer: use the saved answers (get_application_profile), otherwise call ask_user with all such questions of the form at once; Karya won't type guesses, and never answer "Yes" just to qualify. Apply to EVERY job the user picked, one after another, without asking whether to continue; if one can't be done, application_queue(action="skip", job_id, reason). Upload only the PDF that tailor_resume made for THIS job. After Submit, the click result starts with RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED. Tell the user an application was submitted only for SUBMITTED (Karya then records it in the tracker itself). NOT SUBMITTED: fix the listed fields and submit again. UNCONFIRMED: browser_read_text and check before saying anything.
+- Applying honestly: answer every form question truthfully from the user's resume and profile. Questions about notice period, current/expected salary, gender, years of a specific experience, visa or relocation need the user's own answer: use the saved answers (get_application_profile), otherwise call ask_user with all such questions of the form at once; Karya won't type guesses, and never answer "Yes" just to qualify. Job and school dates (start, end, still working there) and where a job was: only the user's own, never invented. Karya asks them once (ask_job_dates), keeps them on the resume and autofill types them into each employment block; if a date field is refused, call ask_job_dates, don't try other dates. Apply to EVERY job the user picked, one after another, without asking whether to continue; if one can't be done, application_queue(action="skip", job_id, reason). Upload only the PDF that tailor_resume made for THIS job. After Submit, the click result starts with RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED. Tell the user an application was submitted only for SUBMITTED (Karya then records it in the tracker itself). NOT SUBMITTED: fix the listed fields and submit again. UNCONFIRMED: browser_read_text and check before saying anything.
 - Resume: before applying, check get_resume_data. No master resume yet? import_resume from their file; no file at all? Ask the user to add one (Settings > Resume path) or build it with them by asking short questions, then save_resume_data. For EVERY application call tailor_resume(job_url): it makes a PDF aligned with that posting from the user's real facts. It never adds skills; if it returns suggested_skills, ask the user whether they have them and use add_resume_skills (they approve) before tailoring again.
 - Freelance: search_freelance, then draft a proposal for the best matches.
 - Contacts/leads: find_contacts(url) lists public emails and social links from a website.
 - Outreach and selling: follow the user's targeting exactly (e.g. "not big names" means small and mid-size people and companies, never famous brands or the biggest creators). Learn what is being offered first (the website and the user's local files), pick targets that have a public email, write a short personal email to each, and send them one by one with send_email (if email isn't set up, it sends through Gmail in the browser). Only use addresses you found on a page or that the user gave (never guess one: guessed addresses bounce), one email per business, and never email the same address twice unless the user asks for a follow-up. Don't stop to offer options; do it. Only create files or websites when the user asks for them.
-- Browser (posting, forms, sites that need a login): browser_* tools. Snapshot after navigating, act on element ids from the latest snapshot, verify with another snapshot. Prefer browser_fill to fill many fields in one call. For logins (only when a page shows a sign-in screen; the browser keeps the user's logins, so open the site first): list_accounts, then browser_type_secret for the password (you never see it). If no saved account exists, call request_credentials. To create a new account, use vault_new_password then browser_type_secret. For social posts use social_compose first.
+- Browser (posting, forms, sites that need a login): browser_* tools. Snapshot after navigating, act on element ids from the latest snapshot, verify with another snapshot. Prefer browser_fill to fill many fields in one call. Custom dropdowns (a box that opens a list): browser_select(its element_id, the option text) opens it and picks; if the option isn't there, the error lists the real options, so pick one of those. A field that fails twice: snapshot, then try browser_select / browser_type on the fresh id once; don't skip a whole job for one field before trying that. For logins (only when a page shows a sign-in screen; the browser keeps the user's logins, so open the site first): list_accounts, then browser_type_secret for the password (you never see it). If no saved account exists, call request_credentials. To create a new account, use vault_new_password then browser_type_secret. For social posts use social_compose first.
 - Posting on a social site: call how_to_post(platform) first and follow the steps in order. With a video/photo from the user: attach it FIRST, wait until it's processed, THEN type the text; never post without that file (if it can't be attached, stop and tell the user). On Instagram keep the video's ORIGINAL size (click the crop icon -> Original) and keep its audio ON (don't mute, don't swap the music). Canvas, maps and game boards (chess): browser_click_at / browser_drag, or browser_move_piece. After a post/submit, only say it's done on RESULT: SUBMITTED.
 - Full access (autopilot), when the user turned it on: do everything without asking - but the quality checks still apply, so fix what they flag. Real-money payments and deleting accounts/data still ask unless the user also turned that off. Never spend money or delete an account on your own guess.
 - PC tasks and fixes: diagnose with system_info, list_processes, run_command (read-only first), then apply the fix.
@@ -674,23 +674,49 @@ class Agent:
                            if chosen else "Nothing picked: ask what they want."}, ensure_ascii=False)
 
     async def _ask_basics(self) -> None:
-        """Ask the questions nearly every job form has (notice period, CTC, relocation, city, gender) once, up front,
-        so the run doesn't stop at each form for them. Only unanswered ones; skipping is fine."""
+        """Ask the questions nearly every job form has (notice period, CTC, relocation, city, gender, and when each job
+        on the resume started and ended) once, up front, so the run doesn't stop at each form for them. Only
+        unanswered ones; skipping is fine."""
         from . import answers
+        from .tools import work_history
         if self._basics_asked or self.ask is None:
             return
         self._basics_asked = True
         missing = await asyncio.to_thread(answers.missing_basics)
-        if not missing:
+        dates = await asyncio.to_thread(work_history.questions)
+        if not missing and not dates:
             return
-        reply = await self.ask({"id": f"basics_{uuid.uuid4().hex[:8]}", "kind": "questions", "questions": missing,
+        reply = await self.ask({"id": f"basics_{uuid.uuid4().hex[:8]}", "kind": "questions",
+                                "questions": missing + [{k: v for k, v in q.items() if not k.startswith("_")} for q in dates],
                                 "reason": "Job forms keep asking these. Answer once and Karya uses them for every "
-                                          "application (leave any you'd rather answer per job empty)."})
+                                          "application (your job dates go on your resume too). Leave any you'd rather "
+                                          "answer per job empty."})
         given = (reply or {}).get("answers") or {}
         for q in missing:
             value = str(given.get(q["q"], "")).strip()
             if value:
                 await asyncio.to_thread(answers.save, q["q"], value)
+        if dates:
+            await asyncio.to_thread(work_history.save_answers, dates, given)
+
+    async def _ask_job_dates(self, call_id: str, args: dict) -> str:
+        """ask_job_dates: one card for every job (and school, if asked) whose dates or place Karya doesn't know."""
+        from .tools import work_history
+        dates = await asyncio.to_thread(work_history.questions, bool(args.get("include_education")))
+        if not dates:
+            return json.dumps({"saved": [], "note": "Karya already knows every job's dates.",
+                               "history": work_history.work_history()["history"]}, ensure_ascii=False)
+        if self.ask is None:
+            return "ERROR: can't show a card here. Ask the user in your reply instead."
+        reply = await self.ask({"id": call_id, "kind": "questions", "reason": "Forms ask when each job started and "
+                                "ended. Answer once: Karya keeps them on your resume and fills them in on every form.",
+                                "questions": [{k: v for k, v in q.items() if not k.startswith("_")} for q in dates]})
+        saved = await asyncio.to_thread(work_history.save_answers, dates, (reply or {}).get("answers") or {})
+        if not saved:
+            return ("The user didn't give the dates. Don't type any: leave those fields, or skip the job with "
+                    "application_queue(action=\"skip\", job_id, reason=\"needs your job dates\").")
+        return json.dumps({"saved": saved, "next": "Fill the date fields now (apply_autofill fills them in the form's "
+                                                   "own format)."}, ensure_ascii=False)
 
     def _prepare_resumes(self) -> None:
         """Tailor the next picked jobs' resumes in the background while Karya works on the current one."""
@@ -710,6 +736,13 @@ class Agent:
             return (f"NOT ASKED: {secret[0]!r} asks for a password or a code. Never collect those with ask_user (the "
                     "answer would be saved in plain text and you'd see it). For a site login use request_credentials "
                     "or vault_new_password, then browser_type_secret; ask_user only for the other questions.")
+        dated = [q["q"] for q in questions if re.search(r"\b(start(ed)?|end(ed)?|join(ed|ing)?|left|from|to)\b.*\b(month|year|"
+                                                         r"date)\b|\b(month|year|date)\b.*\b(start(ed)?|end(ed)?|joined|"
+                                                         r"left)\b", q["q"], re.I) and not answers.classify(q["q"]) ==
+                 "notice_period"]
+        if dated:
+            return (f"NOT ASKED: {dated[0]!r} is about when a job started or ended. Use ask_job_dates instead: one card "
+                    "for every job, saved on the user's resume, so no form asks again.")
         if self.ask is None:
             return "ERROR: can't show a form here. Ask the user in your reply instead."
         items = [{**q, "value": answers.saved_answer(q["q"]) or ""} for q in questions]
@@ -801,6 +834,12 @@ class Agent:
             ok = result.startswith("{")
             await emit({"type": "tool_result", "id": call["id"], "name": name, "ok": ok, "preview": result[:1500]})
             log_action(name, {"questions": len(args.get("questions") or [])}, level, True, ok, "answered" if ok else result)
+            return result
+        if name == "ask_job_dates":
+            result = await self._ask_job_dates(call["id"], args)
+            ok = result.startswith("{")
+            await emit({"type": "tool_result", "id": call["id"], "name": name, "ok": ok, "preview": result[:1500]})
+            log_action(name, args, level, True, ok, "answered" if ok else result)
             return result
         needs_ok = level == CRITICAL or (level == CONFIRM and not self.auto_mode)
         if tool.precheck is not None:

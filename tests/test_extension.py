@@ -578,3 +578,76 @@ def test_ext_endpoint_accepts_only_the_extension(live_server):
     thread.join(30)
     if errors:
         raise errors[0]
+
+
+# ---------------------------------------------------------------- web components and custom dropdowns (2026-10-07)
+# SmartRecruiters' City, phone and date fields sit inside nested shadow roots: Karya listed them but every fill said
+# "Element is gone". Instahyre's "current role" list is plain <li>s that appear only after a click.
+SHADOW_FORM = """<!doctype html><html><body>
+<label>First name* <input id="fn" required></label>
+<spl-field id="host"></spl-field>
+<script>
+{
+class Inner extends HTMLElement {
+  constructor() { super(); const r = this.attachShadow({mode: 'open'});
+    r.innerHTML = '<label for="c">City*</label><input id="c" required aria-required="true">' +
+                  '<label for="f">From</label><input id="f" placeholder="Pick a date">'; }
+}
+if (!customElements.get('spl-inner')) customElements.define('spl-inner', Inner);
+class Outer extends HTMLElement {
+  constructor() { super(); const r = this.attachShadow({mode: 'open'}); r.innerHTML = '<div><spl-inner></spl-inner></div>'; }
+}
+if (!customElements.get('spl-field')) customElements.define('spl-field', Outer);
+}
+</script></body></html>"""
+
+ROLE_DROPDOWN = """<!doctype html><html><body>
+<p>Select your current role:</p>
+<div class="role-select"><button id="t" type="button" aria-haspopup="true">Toggle</button>
+<ul class="dropdown-menu" id="menu" style="display:none"><li>Software Engineer</li><li>Product Manager</li>
+<li>Associate Product Manager</li><li>Data Analyst</li></ul></div>
+<script>
+(() => {
+const menu = document.getElementById('menu');
+document.getElementById('t').addEventListener('click', () => { menu.style.display = menu.style.display ? '' : 'none'; });
+menu.addEventListener('click', (e) => { if (e.target.tagName === 'LI') { window.__role = e.target.textContent;
+  document.getElementById('t').textContent = e.target.textContent; menu.style.display = 'none'; } });
+})();
+</script></body></html>"""
+
+
+def _deep_value(page, inner_id):
+    return page.evaluate("""(id) => document.querySelector('#host').shadowRoot.querySelector('spl-inner')
+                            .shadowRoot.getElementById(id).value""", inner_id)
+
+
+def test_fields_inside_nested_shadow_dom_can_be_filled(page, chrome_link, monkeypatch):
+    from karya import answers
+    answers.save("Which city do you live in?", "Hyderabad")
+    page.set_content(SHADOW_FORM)
+    monkeypatch.setattr(chrome_link, "request", _same_page_request(chrome_link))
+    run_tool("browser_snapshot", {})
+    city = next(it for it in browser.ext_session.items.values() if (it.get("label") or "").startswith("City"))
+    first = next(it for it in browser.ext_session.items.values() if (it.get("label") or "").startswith("First name"))
+    assert city.get("required") and "y" in city                                   # listed, with its position
+    out = run_tool("browser_fill", {"fields": {str(first["id"]): "Asha", str(city["id"]): "Hyderabad"}})
+    assert "gone" not in out and _deep_value(page, "c") == "Hyderabad", out       # found two shadow roots deep
+    check = browser.ext_session.form_check(first["id"])
+    assert not any("City" in q for q in check.get("empty") or [])                  # the deep field counts as filled
+
+
+def test_a_custom_dropdown_is_opened_and_picked(page, chrome_link, monkeypatch):
+    page.set_content(ROLE_DROPDOWN)
+    monkeypatch.setattr(chrome_link, "request", _same_page_request(chrome_link))
+    run_tool("browser_snapshot", {})
+    toggle = next(it for it in browser.ext_session.items.values() if it.get("label") == "Toggle")
+    assert browser.ext_session.options_of(toggle["id"]) == ["Software Engineer", "Product Manager",
+                                                            "Associate Product Manager", "Data Analyst"]
+    assert page.evaluate("() => document.getElementById('menu').style.display") == "none"   # closed again
+    out = run_tool("browser_select", {"element_id": toggle["id"], "option": "Product Manager"})
+    assert out.startswith('Selected "Product Manager"') and page.evaluate("() => window.__role") == "Product Manager"
+    page.set_content(ROLE_DROPDOWN)
+    run_tool("browser_snapshot", {})
+    toggle = next(it for it in browser.ext_session.items.values() if it.get("label") == "Toggle")
+    miss = run_tool("browser_select", {"element_id": toggle["id"], "option": "Chief Wizard"})
+    assert miss.startswith("ERROR") and "Its options: Software Engineer | Product Manager" in miss

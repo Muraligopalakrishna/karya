@@ -664,11 +664,18 @@ class BrowserSession(_Common):
             page.wait_for_load_state("networkidle", timeout=4000)
         except Exception:  # noqa: BLE001 - busy pages never go idle
             pass
-        for _ in range(max(0, int(scrolls))):
+        posts, seen, dry = [], set(), 0
+        for n in range(max(0, int(scrolls)) + 1):
+            if scrolls:
+                found = page.evaluate(PAGE_CALL_JS, {"fn": "socialPosts", "args": {}}) or {}
+                dry = 0 if _add_posts(posts, seen, found.get("posts")) else dry + 1
+            if n >= scrolls or (n and dry >= 2):
+                break
             page.mouse.wheel(0, 2400)            # loads lazy feeds (LinkedIn, X) the way a reader would
             page.wait_for_timeout(1100)
         got = page.evaluate(PAGE_CALL_JS, {"fn": "readPage", "args": {"max": 60000}}) or {}
-        got["status"] = status
+        _add_posts(posts, seen, got.get("posts"))
+        got["posts"], got["status"] = posts, status
         return got
 
     def crawl_close(self) -> str:
@@ -698,17 +705,16 @@ class BrowserSession(_Common):
                                        '[data-testid="loginButton"], input[autocomplete="username"]', timeout=wait_ms)
             except Exception:  # noqa: BLE001 - read what is there
                 pass
+            dry = 0
             for n in range(max(1, int(scrolls)) + 1):
                 found = page.evaluate(PAGE_CALL_JS, {"fn": "socialPosts", "args": {}}) or {}
                 login = login or bool(found.get("login"))
-                for post in found.get("posts") or []:
-                    key = post.get("url") or post.get("text")
-                    if key and key not in seen:
-                        seen.add(key)
-                        posts.append(post)
-                if n < scrolls:
-                    page.mouse.wheel(0, 2600)
-                    page.wait_for_timeout(1300)
+                added = _add_posts(posts, seen, found.get("posts"))
+                dry = 0 if added else dry + 1
+                if n >= scrolls or (n and dry >= 2):   # two scrolls in a row with nothing new: the feed is done
+                    break
+                page.mouse.wheel(0, 2600)
+                page.wait_for_timeout(1300)
             final = page.url
         finally:
             try:
@@ -931,13 +937,21 @@ class BrowserSession(_Common):
                 loc.select_option(label=option, timeout=5000)
             except Exception:
                 loc.select_option(value=option, timeout=5000)
-        else:  # custom dropdown: open it, then click the option
-            loc.click(timeout=8000)
-            self.page.wait_for_timeout(500)
-            target = self.page.get_by_role("option", name=option).first
-            if target.count() == 0:
-                target = self.page.get_by_text(option, exact=True).first
-            target.click(timeout=8000)
+        else:  # custom dropdown: open it and click the option that matches (exact, then the best match)
+            frame = self.frames.get(int(element_id)) or self.page.main_frame
+            got = frame.evaluate(PAGE_CALL_JS, {"fn": "chooseOption", "args": {"id": int(element_id), "option": str(option)}}) or {}
+            if not got.get("ok"):
+                try:
+                    loc.click(timeout=8000)
+                    self.page.wait_for_timeout(500)
+                    target = self.page.get_by_role("option", name=option).first
+                    if target.count() == 0:
+                        target = self.page.get_by_text(option, exact=True).first
+                    target.click(timeout=4000)
+                except Exception as exc:  # noqa: BLE001 - say what the dropdown offers instead of a timeout
+                    raise RuntimeError(got.get("error") or f"couldn't choose \"{option}\" there") from exc
+            elif got.get("picked"):
+                option = got["picked"]
         self._settle(400)
         return f"Selected \"{option}\".\n" + self._snapshot(max_items=70, text_chars=800)
 
@@ -1338,6 +1352,14 @@ class ExtensionSession(_Common):
         self._settle(400)
         return f"Selected \"{result.get('picked', option)}\".\n" + self._snapshot(max_items=70, text_chars=800)
 
+    def options_of(self, element_id) -> list[str]:
+        """A custom dropdown's options: opened, read and closed again in the page (nothing is chosen)."""
+        element_id = int(element_id)
+        result = self._req("act", frame=self.frames.get(element_id, 0), op="openoptions", args={"id": element_id}) or {}
+        if not isinstance(result, dict) or result.get("ok") is False:
+            return []
+        return [str(o) for o in result.get("options") or [] if str(o).strip()][:40]
+
     def set_checked(self, element_id, checked=True):
         self._act(int(element_id), "check", checked=bool(checked))
         return f"Set [{element_id}] to {'checked' if checked else 'unchecked'}."
@@ -1397,11 +1419,20 @@ class ExtensionSession(_Common):
         self._req("open", timeout=60, url=url, new_tab=first)
         self._crawling = True
         time.sleep(1.2)
-        for _ in range(max(0, int(scrolls))):
+        posts, seen, dry = [], set(), 0
+        for n in range(max(0, int(scrolls)) + 1):
+            if scrolls:
+                found = self._req("act", frame=0, op="posts", args={}) or {}
+                dry = 0 if _add_posts(posts, seen, found.get("posts")) else dry + 1
+            if n >= scrolls or (n and dry >= 2):
+                break
             self._req("act", frame=0, op="scroll", args={"direction": "down", "pages": 2.5})
             time.sleep(1.1)
         got = self._req("act", frame=0, op="readpage", args={"max": 60000}) or {}
-        return got if isinstance(got, dict) else {}
+        got = got if isinstance(got, dict) else {}
+        _add_posts(posts, seen, got.get("posts"))
+        got["posts"] = posts
+        return got
 
     def crawl_close(self) -> str:
         if getattr(self, "_crawling", False):
@@ -1423,18 +1454,17 @@ class ExtensionSession(_Common):
                 if found.get("posts") or found.get("login") or time.time() > deadline:
                     break
                 time.sleep(1.0)
+            dry = 0
             for n in range(max(1, int(scrolls)) + 1):
                 if n:
                     found = self._req("act", frame=0, op="posts", args={}) or {}
                 login = login or bool(found.get("login"))
-                for post in found.get("posts") or []:
-                    key = post.get("url") or post.get("text")
-                    if key and key not in seen:
-                        seen.add(key)
-                        posts.append(post)
-                if n < scrolls:
-                    self._req("act", frame=0, op="scroll", args={"direction": "down", "pages": 2.5})
-                    time.sleep(1.3)
+                added = _add_posts(posts, seen, found.get("posts"))
+                dry = 0 if added else dry + 1
+                if n >= scrolls or (n and dry >= 2):
+                    break
+                self._req("act", frame=0, op="scroll", args={"direction": "down", "pages": 2.5})
+                time.sleep(1.3)
         finally:
             tabs = (self._req("tabs", action="list") or {}).get("tabs") or []
             active = next((i for i, t in enumerate(tabs) if t.get("active")), None)
@@ -1521,6 +1551,20 @@ def _use():
     return session
 
 
+def _add_posts(posts: list, seen: set, found) -> int:
+    """Add posts not seen yet (by link, else text); returns how many were new."""
+    added = 0
+    for post in found or []:
+        if not isinstance(post, dict):
+            continue
+        key = str(post.get("text") or "")[:160] or post.get("url")   # LinkedIn's links point at the author
+        if key and key not in seen:
+            seen.add(key)
+            posts.append(post)
+            added += 1
+    return added
+
+
 def _run(method: str, *args):
     backend = None
     try:
@@ -1604,6 +1648,13 @@ def answer_problem(item: dict | None, value) -> str | None:
     if not item:
         return None
     from .. import answers
+    from . import work_history
+    try:   # a job's start/end date: only the date the user gave for that job (2026-10-07: invented dates were typed)
+        handled, problem = work_history.check(item, value, list(_current().items.values()))
+    except Exception:  # noqa: BLE001 - the other checks still run
+        handled, problem = False, None
+    if handled:
+        return problem
     if _is_choice(item):  # a Yes/No button, radio or checkbox: the claim is the option's own label
         question = item.get("question") or ""
         if not question or (value is not None and str(value).strip().lower() in ("false", "0", "off", "unchecked")):
@@ -1639,7 +1690,7 @@ def _click_risk(args):
     if level == CRITICAL and item and is_submit_click(item, label, backend.url):
         from .. import apply_queue
         from . import jobs as jobs_mod
-        job = apply_queue.find_by_url(backend.url) or apply_queue.find_by_url(backend.url, jobs=list(jobs_mod.cached_jobs().values()))
+        job = apply_queue.job_for_page(backend.url) or apply_queue.find_by_url(backend.url, jobs=list(jobs_mod.cached_jobs().values()))
         if job:
             summary = f"Submit your application: {job.get('title', '')} at {job.get('company', '')}\n" + summary
         values = _form_answers(backend, item["id"])
@@ -1657,7 +1708,7 @@ def _not_picked(url: str) -> str | None:
     from . import jobs as jobs_mod
     if not apply_queue.load() or apply_queue.age_seconds() > apply_queue.MAX_AGE_SECONDS:
         return None
-    if apply_queue.find_by_url(url):
+    if apply_queue.job_for_page(url):
         return None
     job = apply_queue.find_by_url(url, jobs=list(jobs_mod.cached_jobs().values()))
     if not job:
@@ -1710,7 +1761,7 @@ def pre_approved_submit(args: dict) -> str | None:
     item = _item(args)
     if not item or args.get("confirm_empty") or not is_submit_click(item, item.get("label") or "", backend.url):
         return None
-    job = apply_queue.find_by_url(backend.url)
+    job = apply_queue.job_for_page(backend.url)
     if not job or job.get("status") != "pending" or int(job.get("auto_tries") or 0) >= 2 \
             or job.get("last_result") == "unconfirmed":
         return None
@@ -1728,7 +1779,7 @@ def denied_note(args: dict) -> str:
     item = _item(args)
     if not item or not is_submit_click(item, item.get("label") or "", backend.url):
         return ""
-    job = apply_queue.find_by_url(backend.url)
+    job = apply_queue.job_for_page(backend.url)
     if not job or job.get("status") != "pending":
         return ""
     apply_queue.mark(job["id"], "skipped", "you didn't approve the Submit")
@@ -1743,7 +1794,7 @@ def _record_submitted(before_url: str, after_url: str, result: str) -> str:
     from . import jobs as jobs_mod
     found = re.search(r"RESULT: SUBMITTED - (.+)", result)
     proof = found.group(1).strip()[:150] if found else "confirmed"
-    job = apply_queue.find_by_url(before_url, after_url)
+    job = apply_queue.job_for_page(before_url, after_url)
     in_queue = job is not None
     if job is None:
         job = apply_queue.find_by_url(before_url, after_url, jobs=list(jobs_mod.cached_jobs().values()))
@@ -1944,7 +1995,7 @@ def _check_already_applied(result):
     if not isinstance(result, str):
         return result
     backend = _current()
-    job = apply_queue.find_by_url(backend.url)
+    job = apply_queue.job_for_page(backend.url)
     if not job or job.get("status") != "pending":
         return result
     marked = apply_queue.already_applied(backend.url, result)
@@ -1969,7 +2020,12 @@ def _check_already_applied(result):
     "new_tab": P("boolean", "Open in a new tab"),
 }, required=["url"], group="browser")
 def browser_open(url: str, new_tab: bool = False):
-    result = _check_already_applied(_run("open", url, new_tab))
+    from .. import apply_queue
+    result = _run("open", url, new_tab)
+    opened = apply_queue.find_by_url(url, _current().url)
+    if opened and opened.get("status") == "pending":
+        apply_queue.set_current(opened, _current().url or url)   # its form may live on another address
+    result = _check_already_applied(result)
     if isinstance(result, str) and not result.startswith(("ERROR", "NOT DONE")) and "is already applied" not in result:
         from . import autofill   # a picked job's form: fill everything Karya knows in the same step
         result += autofill.after_open(_current().url)

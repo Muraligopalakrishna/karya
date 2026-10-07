@@ -36,7 +36,7 @@ from .web import HEADERS, html_to_text
 REDDIT_HEADERS = {"User-Agent": "windows:karya-personal-agent:1.0 (reads public posts for its user)"}
 SOURCES = ("stocktwits", "reddit", "x", "tradingview", "forums", "youtube", "news", "linkedin")
 DEFAULT_SOURCES = SOURCES[:-1]     # LinkedIn when asked: it's slower and reads with the user's account
-BUDGET = 40          # seconds for all sources together; a slow one is reported, never waited for
+BUDGET = 75          # seconds for all sources together (X and LinkedIn are scrolled deep); a slower one is skipped
 CACHE_SECONDS = 600
 
 
@@ -131,24 +131,24 @@ _FILLER = re.compile(r"\b(stocks?|shares?|share price|price|today|now|sentiment|
 _GENERIC_NAME = re.compile(r"\b(ltd|limited|inc|corp|corporation|co|company|industries|holdings?|group|plc|"
                            r"technologies|solutions|services|enterprises|international|the|of|and)\b\.?", re.I)
 ALIASES = {
-    "gold": dict(name="Gold (XAUUSD)", stocktwits="XAUUSD", tradingview="XAUUSD", yahoo="GC=F", market="fx",
+    "gold": dict(core="gold", name="Gold (XAUUSD)", stocktwits="XAUUSD", tradingview="XAUUSD", yahoo="GC=F", market="fx",
                  terms=["gold", "xauusd", "xau"]),
-    "silver": dict(name="Silver (XAGUSD)", stocktwits="XAGUSD", tradingview="XAGUSD", yahoo="SI=F", market="fx",
+    "silver": dict(core="silver", name="Silver (XAGUSD)", stocktwits="XAGUSD", tradingview="XAGUSD", yahoo="SI=F", market="fx",
                    terms=["silver", "xagusd"]),
-    "bitcoin": dict(name="Bitcoin", stocktwits="BTC.X", tradingview="BTCUSD", yahoo="BTC-USD", market="crypto",
+    "bitcoin": dict(core="bitcoin", name="Bitcoin", stocktwits="BTC.X", tradingview="BTCUSD", yahoo="BTC-USD", market="crypto",
                     terms=["bitcoin", "btc"], cashtag="BTC"),
-    "ethereum": dict(name="Ethereum", stocktwits="ETH.X", tradingview="ETHUSD", yahoo="ETH-USD", market="crypto",
+    "ethereum": dict(core="ethereum", name="Ethereum", stocktwits="ETH.X", tradingview="ETHUSD", yahoo="ETH-USD", market="crypto",
                      terms=["ethereum", "eth"], cashtag="ETH"),
-    "nifty": dict(name="Nifty 50", stocktwits="NIFTY50.NSE", tradingview="NSE-NIFTY", yahoo="^NSEI", market="india",
+    "nifty": dict(core="Nifty", name="Nifty 50", stocktwits="NIFTY50.NSE", tradingview="NSE-NIFTY", yahoo="^NSEI", market="india",
                   terms=["nifty"]),
-    "bank nifty": dict(name="Bank Nifty", stocktwits="NIFTYBANK.NSE", tradingview="NSE-BANKNIFTY", yahoo="^NSEBANK",
+    "bank nifty": dict(core="Bank Nifty", name="Bank Nifty", stocktwits="NIFTYBANK.NSE", tradingview="NSE-BANKNIFTY", yahoo="^NSEBANK",
                        market="india", terms=["bank nifty", "banknifty"]),
-    "sensex": dict(name="Sensex", tradingview="BSE-SENSEX", yahoo="^BSESN", market="india", terms=["sensex"]),
-    "s&p 500": dict(name="S&P 500", stocktwits="SPY", tradingview="SPX", yahoo="^GSPC", market="us",
+    "sensex": dict(core="Sensex", name="Sensex", tradingview="BSE-SENSEX", yahoo="^BSESN", market="india", terms=["sensex"]),
+    "s&p 500": dict(core="S&P 500", name="S&P 500", stocktwits="SPY", tradingview="SPX", yahoo="^GSPC", market="us",
                     terms=["s&p", "spx", "spy", "s&p 500", "sp500"], cashtag="SPY"),
-    "nasdaq": dict(name="Nasdaq 100", stocktwits="QQQ", tradingview="NDX", yahoo="^NDX", market="us",
+    "nasdaq": dict(core="Nasdaq", name="Nasdaq 100", stocktwits="QQQ", tradingview="NDX", yahoo="^NDX", market="us",
                    terms=["nasdaq", "qqq", "ndx"], cashtag="QQQ"),
-    "crude oil": dict(name="Crude oil", stocktwits="USO", tradingview="USOIL", yahoo="CL=F", market="fx",
+    "crude oil": dict(core="crude oil", name="Crude oil", stocktwits="USO", tradingview="USOIL", yahoo="CL=F", market="fx",
                       terms=["crude", "oil", "wti", "brent", "usoil"]),
 }
 for _alias, _key in (("xauusd", "gold"), ("xagusd", "silver"), ("btc", "bitcoin"), ("eth", "ethereum"),
@@ -180,38 +180,69 @@ def _stocktwits_lookup(text: str) -> dict | None:
     for r in results[:6]:
         symbol, title = str(r.get("symbol") or ""), str(r.get("title") or "")
         base = symbol.split(".")[0].lower()
-        if base == want or (words and all(w in title.lower() for w in words)):
+        title_words = re.findall(r"[a-z0-9&]+", title.lower())
+        if base == want or (words and all(w in title_words for w in words) and
+                            (len(words) > 1 or title_words[:1] == words)):
             return r
     return None
 
 
+def _asset_from(found: dict, raw: str) -> dict:
+    symbol = str(found["symbol"])
+    base, _, suffix = symbol.partition(".")
+    exchange = str(found.get("exchange") or "").upper()
+    title = str(found.get("title") or symbol)
+    core = _core_name(title, base)
+    if suffix in ("NSE", "BSE") or exchange in ("NSE", "BSE"):
+        market = "india"
+        yahoo = base + (".BO" if suffix == "BSE" or exchange == "BSE" else ".NS")
+        tradingview = ("BSE-" if suffix == "BSE" else "NSE-") + base
+    elif suffix == "X" or exchange == "CRYPTO":
+        market, yahoo, tradingview = "crypto", base + "-USD", base + "USD"
+    elif exchange == "FX":
+        market, yahoo, tradingview = "fx", f"{base}=X", base
+    else:
+        market, yahoo, tradingview = "us", base, base
+    terms = list(dict.fromkeys([base.lower(), core.lower()]))
+    return {"name": title, "core": core, "full": _full_name(title), "query": raw, "stocktwits": symbol,
+            "tradingview": tradingview, "yahoo": yahoo, "market": market,
+            "terms": [t for t in terms if len(t) > 1], "cashtag": base, "asset": True}
+
+
+def _focus(key: str, used: str) -> list[str]:
+    """The question's other words ("gold FOMC minutes" -> fomc, minutes): searched together with the asset."""
+    gone = set(re.findall(r"[a-z0-9&]+", used.lower()))
+    return [w for w in re.findall(r"[a-z0-9&$#]+", key) if len(w) > 2 and w not in _STOP and w not in gone
+            and w not in _MARKET_WORDS][:4]
+
+
 def resolve(query: str, symbol: str = "") -> dict:
-    """The asset (or topic) to look up: names, symbols on each site, the words its posts use, and its market."""
+    """The asset (or topic) to look up: names, symbols on each site, the words its posts use, and its market.
+    An asset named inside a longer question ("gold FOMC minutes", "NVDA earnings", "Reliance Jio IPO") is found,
+    and the rest of the question becomes its focus."""
     raw = (symbol or query or "").strip()
     key = re.sub(r"\s+", " ", _FILLER.sub(" ", raw.lower())).strip(" ?.!,") or raw.lower()
     if key in ALIASES:
         return dict(ALIASES[key], query=raw, asset=True)
-    found = _stocktwits_lookup(key) if key else None
-    if found:
-        symbol = str(found["symbol"])
-        base, _, suffix = symbol.partition(".")
-        exchange = str(found.get("exchange") or "").upper()
-        title = str(found.get("title") or symbol)
-        core = _core_name(title, base)
-        if suffix in ("NSE", "BSE") or exchange in ("NSE", "BSE"):
-            market = "india"
-            yahoo = base + (".BO" if suffix == "BSE" or exchange == "BSE" else ".NS")
-            tradingview = ("BSE-" if suffix == "BSE" else "NSE-") + base
-        elif suffix == "X" or exchange == "CRYPTO":
-            market, yahoo, tradingview = "crypto", base + "-USD", base + "USD"
-        elif exchange == "FX":
-            market, yahoo, tradingview = "fx", f"{base}=X", base
-        else:
-            market, yahoo, tradingview = "us", base, base
-        terms = list(dict.fromkeys([base.lower(), core.lower()]))
-        return {"name": title, "core": core, "full": _full_name(title), "query": raw, "stocktwits": symbol,
-                "tradingview": tradingview, "yahoo": yahoo, "market": market,
-                "terms": [t for t in terms if len(t) > 1], "cashtag": base, "asset": True}
+    for alias in sorted(ALIASES, key=len, reverse=True):     # "gold FOMC minutes": gold, focus on the FOMC
+        if re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", key):
+            asset = dict(ALIASES[alias], query=raw, asset=True)
+            focus = _focus(key, " ".join([alias] + list(asset.get("terms") or [])))
+            if focus:
+                asset["focus"] = focus
+            return asset
+    tickers = [w for w in re.findall(r"\$?\b[A-Z][A-Z0-9&]{1,9}\b", symbol or query or "") if w.strip("$") not in
+               ("I", "A", "AND", "OR", "THE", "IPO", "ETF", "FOMC", "CEO", "AI", "US", "UK", "EU", "Q1", "Q2", "Q3", "Q4")]
+    words = key.split()
+    candidates = [key] + [w.strip("$").lower() for w in tickers] + [" ".join(words[:n]) for n in (3, 2, 1) if len(words) > n]
+    for candidate in dict.fromkeys(c for c in candidates if c):
+        found = _stocktwits_lookup(candidate)
+        if found:
+            asset = _asset_from(found, raw)
+            focus = _focus(key, f"{candidate} {asset['name']} {asset.get('cashtag', '')}")
+            if focus:
+                asset["focus"] = focus
+            return asset
     words = [w for w in re.findall(r"[a-z0-9&$#]+", raw.lower()) if len(w) > 2 and w not in _STOP]
     india = bool(re.search(r"\b(nifty|sensex|nse|bse|india|indian|dalal|rupee|sebi|rbi)\b", raw, re.I))
     return {"name": raw, "core": raw, "query": raw, "market": "india" if india else "general",
@@ -229,14 +260,27 @@ def src_stocktwits(asset: dict, days: int) -> list[dict]:
     symbol = asset.get("stocktwits")
     if not symbol:
         return []
-    resp = _check(_get(f"https://api.stocktwits.com/api/2/streams/symbol/{quote(symbol)}.json"), "StockTwits")
-    out = []
-    for m in resp.json().get("messages") or []:
-        user = (m.get("user") or {}).get("username") or ""
-        mood = ((m.get("entities") or {}).get("sentiment") or {}).get("basic")
-        out.append(_post("stocktwits", m.get("body"), f"https://stocktwits.com/{user}/message/{m.get('id')}",
-                         "@" + user if user else "", m.get("created_at"), (m.get("likes") or {}).get("total"),
-                         {"Bullish": "bullish", "Bearish": "bearish"}.get(mood)))
+    out, older = [], None
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    for page in range(4):                  # 30 a page: read back through the window, up to 120 posts
+        params = {"max": older} if older else None
+        try:
+            resp = _check(_get(f"https://api.stocktwits.com/api/2/streams/symbol/{quote(symbol)}.json", params=params),
+                          "StockTwits")
+        except SourceError:
+            if page == 0:
+                raise
+            break
+        messages = resp.json().get("messages") or []
+        for m in messages:
+            user = (m.get("user") or {}).get("username") or ""
+            mood = ((m.get("entities") or {}).get("sentiment") or {}).get("basic")
+            out.append(_post("stocktwits", m.get("body"), f"https://stocktwits.com/{user}/message/{m.get('id')}",
+                             "@" + user if user else "", m.get("created_at"), (m.get("likes") or {}).get("total"),
+                             {"Bullish": "bullish", "Bearish": "bearish"}.get(mood)))
+        if len(messages) < 20 or not out[-1]["time"] or out[-1]["time"] < since:
+            break
+        older = min(int(m.get("id") or 0) for m in messages) - 1
     return out
 
 
@@ -252,6 +296,8 @@ SUBREDDITS = {
 def _search_words(asset: dict) -> str:
     if not asset.get("asset"):
         return asset["query"]
+    if not asset.get("cashtag") or asset.get("market") == "fx":     # gold, Nifty, crude: any of its names
+        return " OR ".join(f'"{w}"' if " " in w else w for w in asset["terms"][:3])
     base, core = asset.get("cashtag") or "", asset.get("core") or asset["name"]
     if asset["market"] in ("us", "crypto") and base:
         return f"{base} OR \"{core}\""
@@ -262,8 +308,9 @@ _REDDIT_LOCK = threading.Lock()
 _REDDIT_LAST = [0.0]
 
 
-def _reddit_get(url: str, params: dict) -> requests.Response:
-    """Reddit allows few anonymous requests: keep them 2.5 s apart, and after a rate limit wait and try once more."""
+def _reddit_get(url: str, params: dict, max_wait: float = 20) -> requests.Response:
+    """Reddit allows very few anonymous requests: keep them apart, and on a rate limit wait the seconds it names
+    (x-ratelimit-reset) once, if that's within max_wait."""
     with _REDDIT_LOCK:
         gap = time.time() - _REDDIT_LAST[0]
         if gap < 2.5:
@@ -272,39 +319,73 @@ def _reddit_get(url: str, params: dict) -> requests.Response:
         _REDDIT_LAST[0] = time.time()
         if resp.status_code == 429:
             try:
-                pause = float(resp.headers.get("retry-after") or 6)
+                pause = float(resp.headers.get("x-ratelimit-reset") or resp.headers.get("retry-after") or 6)
             except ValueError:
                 pause = 6.0
-            time.sleep(min(max(pause, 2.0), 3.5))
-            resp = _get(url, params=params, headers=REDDIT_HEADERS)
-            _REDDIT_LAST[0] = time.time()
+            if pause <= max_wait:
+                time.sleep(max(pause, 1.0) + 0.5)
+                resp = _get(url, params=params, headers=REDDIT_HEADERS)
+                _REDDIT_LAST[0] = time.time()
     return resp
 
 
-def src_reddit(asset: dict, days: int) -> list[dict]:
-    t = "day" if days <= 1 else "week" if days <= 7 else "month" if days <= 31 else "year"
-    subs = SUBREDDITS.get(asset["market"], SUBREDDITS["general"])
-    resp = _check(_reddit_get(f"https://www.reddit.com/r/{subs}/search.rss",
-                              {"q": _search_words(asset), "restrict_sr": "1", "sort": "new", "t": t}), "Reddit")
-    ns = {"a": "http://www.w3.org/2005/Atom"}
+def _reddit_entries(resp) -> list:
     try:
-        root = ET.fromstring(resp.content)
+        return ET.fromstring(resp.content).findall("a:entry", {"a": "http://www.w3.org/2005/Atom"})
     except ET.ParseError as exc:
         raise SourceError("Reddit sent a page Karya couldn't read") from exc
+
+
+def src_reddit(asset: dict, days: int) -> list[dict]:
+    """The newest threads about it, the most relevant ones for the question's focus, then the comments of the
+    busiest threads: what people actually argue about is in the comments."""
+    t = "day" if days <= 1 else "week" if days <= 7 else "month" if days <= 31 else "year"
+    subs = SUBREDDITS.get(asset["market"], SUBREDDITS["general"])
+    url = f"https://www.reddit.com/r/{subs}/search.rss"
+    searches = [{"q": _search_words(asset), "restrict_sr": "1", "sort": "new", "t": t}]
+    if asset.get("focus"):
+        searches.append({"q": f"{_search_words(asset)} {' '.join(asset['focus'])}", "restrict_sr": "1",
+                         "sort": "relevance", "t": t if t != "day" else "week"})
+    else:
+        searches.append({"q": _search_words(asset), "restrict_sr": "1", "sort": "comments", "t": t})
+    started = time.time()
+    entries = _reddit_entries(_check(_reddit_get(url, searches[0], max_wait=25), "Reddit"))
+    out = _reddit_posts(entries)
+    try:                                     # the extras only while there's time: Reddit is slow to let us in
+        if time.time() - started < 30:
+            out += _reddit_posts(_reddit_entries(_check(_reddit_get(url, searches[1], max_wait=15), "Reddit")))
+        threads = [p for p in out if "/comments/" in p["url"]][:3]
+        for thread in threads:
+            if time.time() - started > 45:
+                break
+            comments = _reddit_entries(_check(_reddit_get(thread["url"].rstrip("/") + "/.rss", {}, max_wait=12),
+                                              "Reddit"))[1:]
+            for c in _reddit_posts(comments, kind="comment")[:25]:
+                c["title"] = thread["title"]
+                out.append(c)
+    except SourceError:
+        pass                                 # rate-limited on the extras: keep what was read
+    return out
+
+
+def _reddit_posts(entries, kind: str = "post") -> list[dict]:
+    ns = {"a": "http://www.w3.org/2005/Atom"}
     out = []
-    for e in root.findall("a:entry", ns):
+    for e in entries:
         title = (e.findtext("a:title", "", ns) or "").strip()
         body = _plain(e.findtext("a:content", "", ns) or "")
         body = re.split(r"\s*submitted by\s+/u/", body)[0].strip()
         link = e.find("a:link", ns)
         author = (e.findtext("a:author/a:name", "", ns) or "").replace("/u/", "u/")
         sub = (e.find("a:category", ns).get("term") if e.find("a:category", ns) is not None else "")
-        out.append(_post("reddit", f"{title}. {body}" if body else title, link.get("href") if link is not None else "",
-                         f"{author} in r/{sub}" if sub else author, e.findtext("a:published", "", ns), title=title))
+        text = body if kind == "comment" else (f"{title}. {body}" if body else title)
+        out.append(_post("reddit", text, link.get("href") if link is not None else "",
+                         f"{author} in r/{sub}" if sub else author, e.findtext("a:published", "", ns) or
+                         e.findtext("a:updated", "", ns), kind=kind, title=title))
     return out
 
 
-def _x_query(asset: dict, days: int) -> str:
+def _x_query(asset: dict, days: int, focus: bool = False) -> str:
     since = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
     if not asset.get("asset"):
         words = asset["query"]
@@ -318,19 +399,34 @@ def _x_query(asset: dict, days: int) -> str:
         names = [f'"{asset["full"]}"'] if asset.get("full") and asset["full"].lower() != core.lower() else []
         names += [f'"{core} share"', f'"{core} shares"', f'"{core} stock"', f"#{tag}", f"${tag}"]
         words = " OR ".join(dict.fromkeys(names))
-    return f"({words}) lang:en since:{since}"
+    extra = f" ({' OR '.join(asset['focus'])})" if focus and asset.get("focus") else ""
+    return f"({words}){extra} lang:en since:{since}"
 
 
 def src_x(asset: dict, days: int) -> list[dict]:
+    """X's Top posts (about the question's focus too) and its Latest ones, each scrolled until no new posts come."""
     from . import browser as B
-    url = "https://x.com/search?q=" + quote_plus(_x_query(asset, days)) + "&src=typed_query"
-    found = B._run("read_feed", url, 2)
-    if isinstance(found, str):
-        raise SourceError(found.replace("ERROR: ", "")[:200])
-    if found.get("login") and not found.get("posts"):
-        raise SourceError("not logged in to X in Karya's browser (open x.com there once and log in)")
-    return [_post("x", p.get("text"), p.get("url"), p.get("author"), p.get("time"),
-                  p.get("likes"), replies=p.get("replies")) for p in found.get("posts") or [] if not p.get("ad")]
+    base = "https://x.com/search?q="
+    feeds = [(base + quote_plus(_x_query(asset, days, focus=True)) + "&src=typed_query", 3),
+             (base + quote_plus(_x_query(asset, days)) + "&src=typed_query&f=live", 7)]
+    posts, seen, problem = [], set(), None
+    for url, scrolls in feeds:
+        found = B._run("read_feed", url, scrolls)
+        if isinstance(found, str):
+            problem = found.replace("ERROR: ", "")[:200]
+            continue
+        if found.get("login") and not found.get("posts"):
+            raise SourceError("not logged in to X in Karya's browser (open x.com there once and log in)")
+        for p in found.get("posts") or []:
+            key = p.get("url") or p.get("text")
+            if p.get("ad") or key in seen:
+                continue
+            seen.add(key)
+            posts.append(_post("x", p.get("text"), p.get("url"), p.get("author"), p.get("time"), p.get("likes"),
+                               replies=p.get("replies")))
+    if not posts and problem:
+        raise SourceError(problem)
+    return posts
 
 
 def src_linkedin(asset: dict, days: int) -> list[dict]:
@@ -341,7 +437,7 @@ def src_linkedin(asset: dict, days: int) -> list[dict]:
         words += " share" if asset["market"] == "india" else " stock"
     url = ("https://www.linkedin.com/search/results/content/?keywords=" + quote_plus(words) +
            "&sortBy=%22date_posted%22")
-    found = B._run("read_feed", url, 2)
+    found = B._run("read_feed", url, 6)
     if isinstance(found, str):
         raise SourceError(found.replace("ERROR: ", "")[:200])
     if found.get("login") and not found.get("posts"):
@@ -375,19 +471,28 @@ def src_tradingview(asset: dict, days: int) -> list[dict]:
     path = asset.get("tradingview")
     if not path:
         return []
-    resp = _check(_get(f"https://www.tradingview.com/symbols/{quote(path)}/ideas/"), "TradingView")
-    items = None
-    for blob in re.findall(r'<script[^>]*type="application/prs\.init-data\+json"[^>]*>(.*?)</script>', resp.text, re.S):
+    items = []
+    for page in ("", "page-2/"):
         try:
-            items = _find_ideas(json.loads(blob))
-        except ValueError:
-            continue
-        if items:
+            resp = _check(_get(f"https://www.tradingview.com/symbols/{quote(path)}/ideas/{page}"), "TradingView")
+        except SourceError:
+            if not page:
+                raise
             break
-    out = []
+        for blob in re.findall(r'<script[^>]*type="application/prs\.init-data\+json"[^>]*>(.*?)</script>', resp.text,
+                               re.S):
+            try:
+                found = _find_ideas(json.loads(blob))
+            except ValueError:
+                continue
+            if found:
+                items += found
+                break
+    out, seen = [], set()
     for it in items or []:
-        if it.get("is_education") or it.get("is_script"):
+        if it.get("is_education") or it.get("is_script") or it.get("id") in seen:
             continue
+        seen.add(it.get("id"))
         direction = (it.get("symbol") or {}).get("direction")
         title = str(it.get("name") or "").strip()
         out.append(_post("tradingview", f"{title}. {it.get('description') or ''}", it.get("chart_url") or "",
@@ -428,7 +533,7 @@ def src_forums(asset: dict, days: int) -> list[dict]:
 
 
 def src_youtube(asset: dict, days: int) -> list[dict]:
-    core = asset.get("core") or asset["query"]
+    core = (asset.get("core") or asset["query"]) + (" " + " ".join(asset["focus"]) if asset.get("focus") else "")
     if not asset.get("asset"):
         words = asset["query"]
     elif asset["market"] == "india":
@@ -469,7 +574,9 @@ def src_youtube(asset: dict, days: int) -> list[dict]:
 def src_news(asset: dict, days: int) -> list[dict]:
     india = asset["market"] == "india"
     words = asset.get("core") or asset["query"]
-    if asset.get("asset") and asset["market"] != "fx":
+    if asset.get("focus"):
+        words += " " + " ".join(asset["focus"])
+    elif asset.get("asset") and asset["market"] != "fx":
         words += " stock" if not india else " share"
     params = {"q": f"{words} when:{max(1, days)}d", "hl": "en-IN" if india else "en-US", "gl": "IN" if india else "US",
               "ceid": "IN:en" if india else "US:en"}
@@ -747,7 +854,7 @@ def run(query: str, symbol: str = "", sources: list[str] | None = None, days: in
         limit = timedelta(days=window.get(post["source"], days))
         if post["time"] is not None and now - post["time"] > limit:
             continue
-        sig = post["url"] or post["text"][:120]
+        sig = f'{post["url"]}|{post["text"][:80]}'      # one author's posts share a LinkedIn link
         same = re.sub(r"[^a-z]+", " ", post["text"].lower()).strip()[:90]
         if not post["text"] or sig in seen or (len(same) > 30 and same in seen) or not _relevant(post, asset):
             continue
@@ -773,12 +880,14 @@ def run(query: str, symbol: str = "", sources: list[str] | None = None, days: in
         bear += post["label"] == "bearish"
     rank = lambda p: (p.get("likes") or 0) + 2 * (p.get("replies") or 0)  # noqa: E731
     pick = lambda label: [_example(p) for p in sorted((p for p in crowd if p["label"] == label), key=rank,
-                                                     reverse=True)[:4]]
+                                                     reverse=True)[:6]]
     tag = asset.get("stocktwits")
     out = {"asking_about": asset["name"] + (f" ({tag})" if tag and tag.lower() not in asset["name"].lower() else ""),
            "window": f"last {days} day{'s' if days != 1 else ''}",
            "read": f"{len(kept)} relevant posts in {round(time.time() - started)}s",
            "crowd_mood": _mood_line(bull, bear), "by_source": by_source}
+    if asset.get("focus"):
+        out["focus"] = " ".join(asset["focus"])
     if price:
         out["price_now"] = price
     levels = levels_in(crowd, (price or {}).get("price"))
@@ -792,7 +901,7 @@ def run(query: str, symbol: str = "", sources: list[str] | None = None, days: in
         out["also_mentioned"] = others
     out["bullish_examples"] = pick("bullish")
     out["bearish_examples"] = pick("bearish")
-    latest = sorted((p for p in crowd if p["time"]), key=lambda p: p["time"], reverse=True)[:4]
+    latest = sorted((p for p in crowd if p["time"]), key=lambda p: p["time"], reverse=True)[:5]
     out["latest"] = [_example(p) for p in latest]
     if news:
         tone = Counter(p["label"] for p in news)
@@ -806,7 +915,7 @@ def run(query: str, symbol: str = "", sources: list[str] | None = None, days: in
                        "days, or name sites to read with sites=[...].")
     out["note"] = ("What people are posting, not advice: social posts can be hype, bots or paid promotion, and the "
                    "mood is counted from their words. StockTwits and TradingView labels are the traders' own.")
-    while len(json.dumps(out, ensure_ascii=False, default=str)) > 9_500:
+    while len(json.dumps(out, ensure_ascii=False, default=str)) > 11_000:
         for field in ("latest", "bearish_examples", "bullish_examples"):
             if len(out.get(field) or []) > 2:
                 out[field].pop()
@@ -846,6 +955,111 @@ def _price(asset: dict) -> dict | None:
 def market_sentiment(query: str, symbol: str = "", sources: list[str] | None = None, days: int = 7,
                      sites: list[str] | None = None, include_x: bool = True):
     return run(query, symbol, sources, days, sites, include_x)
+
+
+# ---------------------------------------------------------------- research a question across the web
+# The user, 2026-10-07: "it has to be deep, not one page and two posts". One web search and one page read was all a
+# research question got; now it's several searches, a dozen pages read at once, and the passages that answer it.
+_ANGLES = ("", "analysis", "opinion", "latest news", "reddit")
+
+
+@tool("deep_research", "Research a question across the whole web in ONE step: several web and news searches (different "
+      "angles: analysis, opinions, latest news, forums), then the best 8-20 pages are read in parallel and the passages "
+      "that answer the question come back with their links and dates. Use it for any research, 'what's happening "
+      "with...', opinions, comparisons, background before applying or writing to someone. For one website use "
+      "crawl_site; for what traders say about a market use market_sentiment.", {
+    "question": P("string", "What to research, in plain words"),
+    "max_pages": P("integer", "How many pages to read (default 12, max 20)"),
+    "days": P("integer", "Only recent pages/news: last N days (optional)"),
+}, required=["question"], group="web")
+def deep_research(question: str, max_pages: int = 12, days: int | None = None):
+    from .web import _ddgs_news, _ddgs_text
+    question = (question or "").strip()
+    if not question:
+        return "ERROR: give a question."
+    max_pages = max(3, min(int(max_pages or 12), 20))
+    limit = None if not days else ("d" if days <= 1 else "w" if days <= 7 else "m" if days <= 31 else "y")
+    words = [w for w in re.findall(r"[a-z0-9$#&.+-]{3,}", question.lower()) if w not in _STOP][:8]
+    started = time.time()
+    pool = ThreadPoolExecutor(max_workers=8)
+    searches = [pool.submit(_ddgs_text, f"{question} {angle}".strip(), 10, "wt-wt", limit) for angle in _ANGLES]
+    news = pool.submit(_ddgs_news, question, 15, "wt-wt", limit or "m")
+    rank: dict[str, dict] = {}
+    for n, fut in enumerate(searches):
+        try:
+            rows = fut.result(timeout=25) or []
+        except Exception:  # noqa: BLE001 - one search failing never stops the research
+            rows = []
+        for pos, r in enumerate(rows):
+            url = _norm_url(str(r.get("href") or r.get("url") or ""))
+            if not url.startswith("http") or _SKIP_EXT.search(urlparse(url).path):
+                continue
+            hit = rank.setdefault(url, {"url": url, "title": r.get("title") or "", "snippet": r.get("body") or "",
+                                        "score": 0.0, "kind": "web"})
+            hit["score"] += 1.0 / (1 + pos) + (0.3 if n == 0 else 0)
+    try:
+        for pos, r in enumerate(news.result(timeout=25) or []):
+            url = _norm_url(str(r.get("url") or ""))
+            if url.startswith("http"):
+                hit = rank.setdefault(url, {"url": url, "title": r.get("title") or "", "snippet": r.get("body") or "",
+                                            "score": 0.0, "kind": "news", "date": (r.get("date") or "")[:10],
+                                            "source": r.get("source") or ""})
+                hit["score"] += 0.8 / (1 + pos)
+    except Exception:  # noqa: BLE001
+        pass
+    ordered = sorted(rank.values(), key=lambda h: -h["score"])
+    per_site: Counter = Counter()
+    chosen = []
+    for h in ordered:                     # many sites, not ten pages of one
+        site = urlparse(h["url"]).netloc.lower().removeprefix("www.")
+        if per_site[site] >= 2:
+            continue
+        per_site[site] += 1
+        chosen.append(h)
+        if len(chosen) >= max_pages:
+            break
+
+    def read(hit: dict) -> dict:
+        try:
+            resp = requests.get(hit["url"], headers=HEADERS, timeout=12)
+        except requests.RequestException as exc:
+            return {**hit, "error": type(exc).__name__}
+        if resp.status_code >= 400 or "html" not in resp.headers.get("content-type", "html"):
+            return {**hit, "error": f"HTTP {resp.status_code}"}
+        title, text, _ = _page_text(resp.text, resp.url)
+        return {**hit, "title": title or hit["title"], "passages": _snippets(text, words, 4, 360), "chars": len(text)}
+
+    pages = list(pool.map(read, chosen))
+    pool.shutdown(wait=False, cancel_futures=True)
+    findings, unread = [], []
+    for p in pages:
+        site = urlparse(p["url"]).netloc.lower().removeprefix("www.")
+        if p.get("passages"):
+            findings.append({k: v for k, v in {"title": str(p["title"])[:120], "site": site, "date": p.get("date"),
+                                               "url": p["url"], "passages": p["passages"]}.items() if v})
+        else:
+            unread.append({"title": str(p.get("title") or "")[:100], "url": p["url"],
+                           "snippet": str(p.get("snippet") or "")[:200],
+                           "why": p.get("error") or ("page needs JavaScript or a login" if p.get("chars", 0) < 300
+                                                     else "no passage about it")})
+    out = {"question": question, "searched": f"{len(_ANGLES)} web searches + news",
+           "pages_read": len(pages), "with_answers": len(findings), "took": f"{round(time.time() - started)}s",
+           "findings": findings}
+    if unread:
+        out["not_read"] = unread[:8]
+    out["next"] = ("Answer from these passages and cite their links. For a page that needs a login or JavaScript, "
+                   "browser_open it; for one site in depth, crawl_site.")
+    while len(json.dumps(out, ensure_ascii=False)) > 11_000:
+        fat = max(out["findings"], key=lambda f: len(f.get("passages") or []), default=None)
+        if fat is not None and len(fat["passages"]) > 1:
+            fat["passages"].pop()
+        elif len(out["findings"]) > 3:
+            out["findings"].pop()
+        elif out.get("not_read"):
+            out.pop("not_read")
+        else:
+            break
+    return out
 
 
 # ---------------------------------------------------------------- crawl any website
@@ -1033,8 +1247,15 @@ def crawl_site(url: str, query: str = "", max_pages: int | None = None, include_
     if isinstance(out, dict):
         if searched:
             out["started_at"] = start
-        while len(json.dumps(out, ensure_ascii=False)) > 9_500 and len(out.get("pages") or []) > 3:
-            out["pages"].pop()
+        while len(json.dumps(out, ensure_ascii=False)) > 11_000:
+            pages = out.get("pages") or []
+            fat = max(pages, key=lambda p: len(p.get("posts") or []), default=None)
+            if fat is not None and len(fat.get("posts") or []) > 6:
+                fat["posts"].pop()           # fewer quotes per page before whole pages go
+            elif len(pages) > 3:
+                pages.pop()
+            else:
+                break
     return out
 
 
@@ -1070,7 +1291,7 @@ def _page_row(state: dict, url: str, title: str, text: str, depth: int, posts: l
                                                "url": post.get("url")}.items() if v}))
     found = [row for _, row in sorted(found, key=lambda x: -x[0])]
     if found:
-        page["posts"] = found[:8]
+        page["posts"] = found[:30]
         page.pop("passages", None)            # the posts say it better than text cut from the page
         page["matches"] = max(page.get("matches", 0), len(found))
     return page
@@ -1187,7 +1408,7 @@ def _crawl_browser(start: str, seeds: list[str], max_pages: int, state: dict):
                 continue
             try:
                 social = bool(BROWSER_SITES.search(state["host"]))
-                got = B._run("crawl_read", link, 4 if social and depth == 0 else 1)
+                got = B._run("crawl_read", link, 10 if social and depth == 0 else 1)   # a feed: read deep
             except Exception as exc:  # noqa: BLE001 - one page failing never ends the crawl
                 errors.append(f"{link}: {type(exc).__name__}")
                 continue

@@ -360,6 +360,34 @@ def _call_from(obj) -> tuple[str | None, dict | None]:
     return name.strip(), args if isinstance(args, dict) else None
 
 
+_LEAD_NAME = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]{1,63})\s*(?:\n|\(|\{|$|<)")
+
+
+def _lead_call(block: str, obj) -> tuple[str | None, dict | None]:
+    """A call written as `browser_fill\\n{"arguments": {...}}`, `browser_fill {...}` or a bare `browser_snapshot`:
+    the name is a real tool's name, so it's read; without usable arguments it only runs if the tool needs none."""
+    lead = _LEAD_NAME.match(block or "")
+    if not lead:
+        return None, None
+    from .registry import TOOLS
+    name = lead.group(1)
+    tool_obj = TOOLS.get(name)
+    if tool_obj is None:
+        return None, None
+    args = None
+    if isinstance(obj, dict):
+        key = next((k for k in _ARG_KEYS if k in obj), None)
+        inner = obj.get(key) if key is not None else {k: v for k, v in obj.items() if k not in ("name", "tool", "id", "type")}
+        if isinstance(inner, str):
+            inner = loads_lenient(inner)[0] if inner.strip() else {}
+        args = inner if isinstance(inner, dict) else None
+    elif "{" not in block and not tool_obj.required:
+        args = {}
+    if args is not None and any(r not in args for r in tool_obj.required):
+        args = None
+    return name, args
+
+
 def parse_reply(text: str) -> dict:
     """Turn the model's text into an assistant message, with tool_calls when it asked to run tools.
 
@@ -382,6 +410,8 @@ def parse_reply(text: str) -> dict:
                 if value is not None and (end is not None or not repaired):  # a repaired, cut-off reply isn't trusted
                     obj = value
         name, args = _call_from(obj)
+        if name is None:
+            name, args = _lead_call(block, obj)
         if name is None:
             guess = _NAME_GUESS.search(block)
             name = guess.group(1) if guess else None

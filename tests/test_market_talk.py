@@ -318,3 +318,86 @@ def test_robots_refusal_reads_only_the_page_the_user_named(monkeypatch):
     assert out["mode"].startswith("read in Karya's browser") and "robots.txt" in out["mode"]
     assert read == ["https://news.example.com/markets"] and out["skipped_by_robots_txt"] == 1
     assert out["pages_with_matches"] == 1
+
+
+# ---------------------------------------------------------------- going deep (2026-10-07: "one page, two posts")
+def test_an_asset_inside_a_longer_question_is_found_with_its_focus():
+    asset = M.resolve("gold FOMC meeting minutes today")
+    assert asset["stocktwits"] == "XAUUSD" and asset["focus"] == ["fomc", "meeting", "minutes"]
+    assert M.resolve("gold XAUUSD")["stocktwits"] == "XAUUSD" and not M.resolve("gold XAUUSD").get("focus")
+    assert M.resolve("what are people saying about bitcoin ETF")["name"] == "Bitcoin"
+    assert M._search_words(asset) == "gold OR xauusd OR xau"                     # not the phrase "Gold (XAUUSD)"
+    assert "(fomc OR meeting OR minutes)" in M._x_query(asset, 3, focus=True)
+    assert "fomc" not in M._x_query(asset, 3)
+
+
+def test_stocktwits_is_read_back_through_several_pages(monkeypatch):
+    calls = []
+
+    def page(url, params=None, headers=None, timeout=15):
+        calls.append((params or {}).get("max"))
+        start = 1000 - 30 * (len(calls) - 1)
+        return Resp(body=json.dumps({"messages": [
+            {"id": start - i, "body": f"$NVDA post {start - i}", "created_at": _ago(1 + len(calls)),
+             "user": {"username": f"u{start - i}"}} for i in range(30)]}), ctype="application/json")
+    monkeypatch.setattr(M, "_get", page)
+    posts = M.src_stocktwits({"stocktwits": "NVDA"}, 7)
+    assert len(posts) == 120 and calls == [None, 970, 940, 910]                  # older pages by message id
+
+
+def test_x_reads_top_and_latest_and_merges_them(monkeypatch):
+    seen = []
+
+    def feed(method, url, scrolls):
+        seen.append((url, scrolls))
+        mine = [{"author": "@a", "text": "$BTC breakout", "url": "https://x.com/a/status/1"},
+                {"author": "@b", "text": "$BTC dump coming", "url": "https://x.com/b/status/2"}]
+        if "f=live" in url:
+            mine.append({"author": "@c", "text": "$BTC new post", "url": "https://x.com/c/status/3"})
+        return {"url": url, "posts": mine}
+    monkeypatch.setattr(B, "_run", feed)
+    posts = M.src_x(M.resolve("bitcoin ETF"), 7)
+    assert [p["author"] for p in posts] == ["@a", "@b", "@c"]                    # the same post once
+    assert "f=live" not in seen[0][0] and "f=live" in seen[1][0] and seen[1][1] > seen[0][1]
+    assert "%28etf%29" in seen[0][0].lower()                                      # Top: the question's focus too
+
+
+def test_deep_research_reads_many_sites_and_returns_passages(monkeypatch):
+    from karya.tools import web
+    def text_search(query, n, region, limit):
+        return [{"href": f"https://site{i}.example/{query.split()[-1]}", "title": f"Page {i}", "body": "about gold"}
+                for i in range(6)] + [{"href": "https://site0.example/extra", "title": "same site", "body": ""}]
+    monkeypatch.setattr(web, "_ddgs_text", text_search)
+    monkeypatch.setattr(web, "_ddgs_news", lambda q, n, r, l: [{"url": "https://news.example/gold", "title": "Gold falls",
+                                                                 "date": "2026-10-07T10:00", "source": "Wire"}])
+    pages = {}
+
+    def get(url, headers=None, timeout=15, **k):
+        body = ("<html><title>T</title><body><main><p>Gold prices slipped ahead of the FOMC minutes as the dollar "
+                "firmed, traders said on Wednesday.</p></main></body></html>")
+        pages[url] = True
+        return Resp(body=body, url=url)
+    monkeypatch.setattr(M.requests, "get", get)
+    out = M.deep_research("gold FOMC minutes", max_pages=10)
+    assert out["pages_read"] == 10 and out["with_answers"] == 10
+    sites = [f["site"] for f in out["findings"]]
+    assert max(sites.count(s) for s in sites) <= 2                                 # many sites, not one site's pages
+    assert "FOMC minutes" in out["findings"][0]["passages"][0] and out["findings"][0]["url"].startswith("https://")
+
+
+def test_a_social_search_page_keeps_many_posts(monkeypatch):
+    posts = [{"author": f"P{i}", "text": f"We are hiring an APM in Bengaluru, role {i}", "url": f"https://www.linkedin.com/in/p{i}/"}
+             for i in range(40)]
+    page = {"url": "https://www.linkedin.com/search/results/content/?keywords=apm", "title": "Search",
+            "text": "results", "links": [], "posts": posts}
+    asked = []
+
+    def run(method, *a):
+        if method == "crawl_close":
+            return "closed"
+        asked.append(a)
+        return page
+    monkeypatch.setattr(B, "_run", run)
+    out = M.crawl_site("linkedin", "apm hiring", 1)
+    assert asked[0][1] == 10                                                    # scrolled deep (stops when dry)
+    assert len(out["pages"][0]["posts"]) >= 25 and len(json.dumps(out)) <= 11_000
