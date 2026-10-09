@@ -626,7 +626,7 @@
       const box = ownMenu(el);
       let found = box ? deepAll('[role="option"], [class*="option" i], li', box).filter((o) => menuish(o, el)) : [];
       if (!found.length) found = menuNodes(el).filter((o) => !before.has(o));
-      if (!found.length) found = optionNodes().filter((o) => menuish(o, el));
+      // never options that were on the page already: they belong to another field (KLA listed its phone code)
       if (found.length) return leafOptions(found);
     }
     return [];
@@ -667,8 +667,12 @@
     return { picked: null };
   };
   // Fields that usually want a suggestion picked even though the page doesn't mark them as a combobox.
-  const placeLike = (el) => /location|city|town|address|country|region/i.test(
-    [labelOf(el), el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("class")].join(" "));
+  // "Email Address" and "Country Phone Code" are not places (Workday's email field once waited 45 s for suggestions).
+  const placeLike = (el) => {
+    const text = [labelOf(el), el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("class")].join(" ");
+    if (el.type === "email" || el.type === "tel" || /e-?mail|phone|mobile|\bcode\b|zip|postal|pin ?code/i.test(text)) return false;
+    return /location|city|town|address|country|region/i.test(text);
+  };
 
   async function selectOption(el, option) {
     if (el.tagName !== "SELECT" && el.querySelector) {
@@ -911,6 +915,34 @@
       }
       clickEl(el); if (a.double) clickEl(el);
       return { ok: true };
+    }
+    // Typing done by Chrome itself (background.js type_native): page script only focuses the field before and checks
+    // it after. Workday and similar forms ignore values set from script and kept every field "invalid" (2026-10-09).
+    if (op === "focusfield") {
+      const kind = (el.getAttribute("type") || "text").toLowerCase();
+      if (!["INPUT", "TEXTAREA"].includes(el.tagName) || el.disabled || el.readOnly ||
+          ["file", "checkbox", "radio", "hidden", "date", "month", "week", "time", "datetime-local", "color", "range",
+           "submit", "button", "reset", "image"].includes(kind)) return { ok: false, error: "not a plain text field" };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      el.focus({ preventScroll: true });
+      const root = el.getRootNode ? el.getRootNode() : document;
+      const focused = (root.activeElement || document.activeElement) === el;
+      return { ok: focused, error: focused ? undefined : "couldn't focus that field", had: String(el.value || "").length };
+    }
+    if (op === "afterfill") {
+      const want = String(a.value), now = String(el.value || "");
+      const digits = (s) => s.replace(/\D/g, "");
+      const same = (x, y) => x === y || x.replace(/\s+/g, "") === y.replace(/\s+/g, "") ||
+        (digits(y).length >= 6 && digits(x) === digits(y));          // a phone mask reformats the digits
+      const took = a.clear === false ? now.endsWith(want) || now.includes(want) : same(now, want);
+      if (!took) return { ok: true, took: false, now: now.slice(0, 80) };
+      const combo = isCombo(el);
+      if ((combo || placeLike(el)) && !a.secret && a.pick !== false && !isSearch(el)) {
+        const res = await K.pick({ value: a.value, quick: !combo });
+        if (combo || res.picked || res.options) return { ok: true, took: true, combo: true, picked: res.picked, options: res.options };
+      }
+      if (!a.keep_focus && !combo) el.blur();  // many forms validate a field when it loses focus
+      return { ok: true, took: true };
     }
     if (op === "set") {
       if (el.tagName === "SELECT" || (!["INPUT", "TEXTAREA"].includes(el.tagName) && !el.isContentEditable &&

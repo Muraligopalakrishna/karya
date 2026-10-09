@@ -542,7 +542,31 @@ def score_job(job: dict, query_terms: list, skills: set[str], prefs: dict) -> tu
     return max(1, min(99, score)), reasons
 
 
-_SEARCH_ASK = re.compile(r"\b(find|search|look for|look up|show me|new|more|other|another|fresh|latest)\b", re.I)
+_SEARCH_ASK = re.compile(r"\b(find|search|look for|look up|show me|new|more|other|another|fresh|latest)\b|"
+                         r"\bany (job|role|position|opening)s?\b|\b(jobs?|roles?|positions?|openings?) (in|at|near|from)\b|"
+                         r"\bapply (to|for) (some|a few|jobs?|roles?)\b", re.I)
+
+
+def picked_only(args) -> str | None:
+    """While the user's pick list is active, Karya works only on the jobs they picked. 2026-10-09: the AI announced
+    "the last picked job - OKX", looked up J55 (a job nobody picked), tailored a resume for it and opened a made-up
+    link, then skipped a job the user did pick."""
+    from .. import answers, apply_queue
+    job_id = str(args.get("job_id") or "").strip().upper()
+    queue = apply_queue.load()
+    left = apply_queue.pending()
+    if not job_id or not left or any(str(j.get("id", "")).upper() == job_id for j in queue):
+        return None
+    if re.search(rf"\b{re.escape(job_id)}\b", " ".join(answers.RECENT_USER[-2:]).upper()):
+        return None                       # the user named it
+    try:                                  # a search newer than the pick list: its jobs can be looked at before picking
+        if (CACHE_DIR / "last_jobs.json").stat().st_mtime > time.time() - apply_queue.age_seconds():
+            return None
+    except OSError:
+        pass
+    nxt = left[0]
+    return (f"NOT RUN: {job_id} isn't one of the jobs the user picked. Work only on their picks; next: "
+            f'{nxt["id"]} "{nxt["title"]}" at {nxt["company"]} ({nxt["url"]}). application_queue shows the list.')
 
 
 def _search_precheck() -> str | None:
@@ -1027,7 +1051,7 @@ DETAILS_TTL = 30 * 60
       "(Greenhouse) and how to apply. Pass the job's id from find_jobs (J1, J2...) or a URL.", {
     "job_id": P("string", "Job id from find_jobs, e.g. J2 (preferred)"),
     "url": P("string", "Job posting URL (only if there's no id)"),
-}, group="jobs")
+}, group="jobs", precheck=picked_only)
 def get_job_details(url: str = "", job_id: str = ""):
     url = resolve_job_url(job_id, url)
     if not url:
@@ -1175,6 +1199,10 @@ def application_queue(action: str = "status", job_id: str = "", reason: str = ""
             return ("NOT SKIPPED: the user already chose to apply to this job. Experience requirements are the company's "
                     "call and suggested skills are optional, so apply anyway and answer the form truthfully. Skip only "
                     "when applying is impossible (closed posting, a login you don't have, a broken form).")
+        if action == "skip" and _SECOND_GUESS.search(reason or "") and not _user_dropped(job_id):
+            return ("NOT SKIPPED: the user picked this job themselves, so it isn't yours to drop for being in another "
+                    "place or 'not what they want'. Apply to it. (If the user asked for something new, just do that: a "
+                    "new find_jobs and choose_jobs replace this list.) Skip only when applying is impossible.")
         job = apply_queue.mark(job_id, "skipped" if action == "skip" else "applied",
                                (reason or "skipped") if action == "skip" else "you applied yourself")
         if not job:
@@ -1183,6 +1211,23 @@ def application_queue(action: str = "status", job_id: str = "", reason: str = ""
             track_application(job.get("company", ""), job.get("title", ""), job.get("url", ""), "applied",
                               method="you applied yourself")
     return apply_queue.status_text()
+
+
+# Skip reasons that second-guess what the user picked (the AI once dropped a picked job "because the user wants Dubai").
+_SECOND_GUESS = re.compile(r"\buser (wants|wanted|asked|prefers|said|is looking)|\binstead\b|\bnot (in|what|the|a) |"
+                           r"\b(location|country|city|place)\b|\bbetter (match|fit|option)|\bnot relevant|"
+                           r"\b(doesn'?t|does not|don'?t) (match|suit|fit)", re.I)
+
+
+def _user_dropped(job_id: str) -> bool:
+    """The user's own recent words drop this job ("skip Replit", "don't apply to J50")."""
+    from .. import answers, apply_queue
+    job = next((j for j in apply_queue.load() if str(j.get("id", "")).upper() == str(job_id).upper()), None)
+    said = " ".join(answers.RECENT_USER[-2:]).lower()
+    if not job or not re.search(r"\b(skip|don'?t|do not|not|remove|drop|leave|stop|cancel)\b", said):
+        return False
+    names = [str(job.get("id", "")).lower()] + [w for w in re.findall(r"[a-z0-9]{3,}", str(job.get("company", "")).lower())]
+    return any(re.search(rf"\b{re.escape(n)}\b", said) for n in names if n)
 
 
 @tool("ask_user", "Ask the user questions only they can answer (notice period, current/expected salary, gender, years of a "

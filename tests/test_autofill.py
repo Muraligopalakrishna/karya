@@ -285,3 +285,13 @@ def test_new_questions_after_a_choice_are_autofilled(page, monkeypatch):
     out = browser._more_fields(before)
     assert calls and out.startswith("\n\nNEW FIELDS APPEARED. AUTOFILL: filled 2")
     assert browser._more_fields(set(fake.items)) == ""                        # nothing new: nothing runs
+
+
+def test_phone_without_the_country_code_when_the_form_has_its_own_code_field(page):
+    fake, _ = page
+    fake.form[4]["label"] = "Phone Number*"
+    fake.form[20] = {"id": 20, "tag": "input", "type": "text", "role": "combobox", "label": "Country Phone Code*",
+                     "value": "India (+91)"}
+    autofill.apply_autofill()
+    assert fake.filled["Phone Number*"] == "90000 00000"                      # Workday wants the national number
+    assert "Country Phone Code*" not in fake.filled

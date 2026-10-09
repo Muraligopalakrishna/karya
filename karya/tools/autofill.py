@@ -47,6 +47,10 @@ _SKIP_TYPES = {"hidden", "submit", "button", "reset", "image", "password", "sear
 _RULE_TOPICS = {"work_authorization", "relocation"}
 
 
+_CODE_FIELD = re.compile(r"(country|dial(l?ing)?)\s*(phone\s*)?code|phone\s*code|\bcountry\s*prefix", re.I)
+_PHONE_ONLY = re.compile(r"\bphone\b|\bmobile\b", re.I)
+
+
 def _text(it: dict) -> str:
     return " ".join(str(it.get(k) or "") for k in ("label", "name", "placeholder", "key"))
 
@@ -274,6 +278,7 @@ def plan(items: list[dict], profile: dict, resume: str | None, page_text: str = 
     """What to put where: ({id: value} for browser fields, {id: file} for uploads, {id: name} of what gets filled)."""
     fields = [it for it in items if _field(it)]
     fills, names, inside = history_plan(items)
+    has_code = any(_CODE_FIELD.search(_text(it)) and re.search(r"\+?\d{1,3}", str(it.get("value") or "")) for it in items)
     uploads = {}
     job, used = latest_job(), set()
     target = _resume_input(items, page_text)
@@ -296,6 +301,8 @@ def plan(items: list[dict], profile: dict, resume: str | None, page_text: str = 
             value = _job_value(it, job, used)
         if value is None:
             continue
+        if has_code and _PHONE_ONLY.search(_text(it)):
+            value = re.sub(r"^\s*(\+|00)\d{1,3}[\s-]*", "", value)   # the country code has its own field (Workday)
         if (it.get("role") == "combobox" or B.wants_pick(it)) and len(value) > 40:
             continue                      # a sentence the user wrote elsewhere is not one of this list's options
         if it.get("tag") == "select":

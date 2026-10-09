@@ -386,3 +386,37 @@ def _safe(fn, arg, errors):
         fn(arg)
     except BaseException as exc:  # noqa: BLE001 - re-raised in the test thread
         errors.append(exc)
+
+
+# ---------------------------------------------------------------- staying on the user's picks (2026-10-09)
+def test_only_the_picked_jobs_are_worked_on(shortlist, monkeypatch):
+    import os
+    monkeypatch.setattr(answers, "RECENT_USER", ["apply to these"])
+    old = time.time() - 120
+    os.utime(jobs.CACHE_DIR / "last_jobs.json", (old, old))        # the search came before the picks
+    apply_queue.start([JOBS["J1"]])
+    stop = jobs.picked_only({"job_id": "J2"})
+    assert stop.startswith("NOT RUN: J2 isn't one of the jobs the user picked") and "J1" in stop
+    assert jobs.picked_only({"job_id": "J1"}) is None
+    monkeypatch.setattr(answers, "RECENT_USER", ["what about J2?"])
+    assert jobs.picked_only({"job_id": "J2"}) is None                 # the user named it
+    monkeypatch.setattr(answers, "RECENT_USER", ["apply to these"])
+    os.utime(jobs.CACHE_DIR / "last_jobs.json", (time.time() + 5, time.time() + 5))   # a newer search
+    assert jobs.picked_only({"job_id": "J2"}) is None
+
+
+def test_a_picked_job_isnt_dropped_on_the_ais_own_judgement(shortlist, monkeypatch):
+    apply_queue.start([JOBS["J1"], JOBS["J2"]])
+    monkeypatch.setattr(answers, "RECENT_USER", ["apply to these"])
+    out = jobs.application_queue("skip", "J1", "User wants jobs in Dubai or Singapore, not this role")
+    assert out.startswith("NOT SKIPPED: the user picked this job themselves")
+    assert apply_queue.load()[0]["status"] == "pending"
+    assert "skipped" in json.dumps(jobs.application_queue("skip", "J1", "posting is closed (404)"))
+    monkeypatch.setattr(answers, "RECENT_USER", ["skip the Zeta one"])
+    assert "skipped" in json.dumps(jobs.application_queue("skip", "J2", "the user doesn't want this location"))
+
+
+def test_a_new_job_request_may_search_while_a_list_is_open():
+    assert jobs._SEARCH_ASK.search("dont apply that i want you to apply any job in dubai for me or in singapore")
+    assert jobs._SEARCH_ASK.search("jobs in London please")
+    assert not jobs._SEARCH_ASK.search("continue")

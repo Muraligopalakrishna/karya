@@ -350,6 +350,30 @@ const ops = {
     return { url: tab.url, title: tab.title, items, next, text: text.slice(0, Math.max(0, Number(text_chars) || 0)) };
   },
 
+  async type_native({ frame = 0, id, value = "", clear = true, pick = true, keep_focus = false }) {
+    // Type into a field the way a person does: Chrome's own key input (trusted events). Frameworks like Workday's
+    // ignore values set from page script and kept marking filled fields invalid (2026-10-09). Main frame only.
+    if (!chrome.debugger || frame !== 0) return { ok: false, error: "native typing unavailable here" };
+    const tabId = await requireTab();
+    const focus = await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a), ["focusfield", { id }]);
+    if (!focus || focus.ok === false) return focus || { ok: false, error: "no field" };
+    await debuggerOn(tabId);
+    try {
+      const send = (params) => chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", params);
+      if (clear && focus.had) {     // select everything in the field and delete it, as Ctrl+A, Backspace would
+        await send({ type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2, commands: ["selectAll"] });
+        await send({ type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+        await send({ type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+        await send({ type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+      }
+      if (String(value)) await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(value) });
+    } finally {
+      debuggerIdle();
+    }
+    return await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a),
+      ["afterfill", { id, value: String(value), clear, pick, keep_focus }]) || { ok: true };
+  },
+
   async upload_native({ frame = 0, id, path }) {
     // Put a file from this PC into the page's file input the way Chrome does when a person picks it: a trusted
     // change event. Sites like Instagram ignore files set from page script (2026-10-07: the reel never loaded).

@@ -178,13 +178,17 @@ def is_search_field(item: dict | None) -> bool:
 
 
 _PLACE = re.compile(r"location|city|town|address|country|region", re.I)
+_NOT_PLACE = re.compile(r"e-?mail|phone|mobile|\bcode\b|zip|postal|pin ?code", re.I)
 
 
 def wants_pick(item: dict | None) -> bool:
     """Text fields whose value should be chosen from the page's suggestion list (comboboxes, location fields)."""
     if not item or is_search_field(item) or item.get("tag") not in ("input", "textarea", None):
         return False
-    return item.get("role") == "combobox" or bool(_PLACE.search(f"{item.get('label', '')} {item.get('name', '')}"))
+    text = f"{item.get('label', '')} {item.get('name', '')}"
+    if item.get("type") in ("email", "tel") or _NOT_PLACE.search(text):
+        return item.get("role") == "combobox"      # "Email Address", "Country Phone Code": not places
+    return item.get("role") == "combobox" or bool(_PLACE.search(text))
 
 
 # ---------------------------------------------------------------- what happened after a submit click
@@ -1316,10 +1320,32 @@ class ExtensionSession(_Common):
         note = "The link opened in a new Karya tab (now active).\n" if result.get("new_tab") else ""
         return f"Clicked \"{label}\".\n" + note + (verdict + "\n" if verdict else "") + self._snapshot(max_items=80, text_chars=1200)
 
+    _NO_NATIVE = {"file", "checkbox", "radio", "hidden", "date", "month", "week", "time", "datetime-local", "color",
+                  "range", "submit", "button", "reset", "image"}
+
+    def _native_type(self, eid: int, value: str, clear: bool = True, pick: bool = True, keep_focus: bool = False):
+        """Type the way a person does, with Chrome's own key input (trusted events): Workday and similar forms ignore
+        values set from page script and kept marking filled fields invalid (2026-10-09). None: use page-script typing
+        (an older extension, a field in a frame, a rich editor, or the text didn't land)."""
+        item = self.items.get(eid) or {}
+        if item.get("tag") not in ("input", "textarea") or item.get("editable") or \
+                (item.get("type") or "text") in self._NO_NATIVE or self.frames.get(eid, 0) != 0:
+            return None
+        try:
+            res = self._req("type_native", timeout=60, frame=0, id=int(eid), value=str(value), clear=bool(clear),
+                            pick=bool(pick), keep_focus=bool(keep_focus))
+        except RuntimeError:
+            return None
+        if not isinstance(res, dict) or res.get("ok") is False or res.get("took") is False:
+            return None
+        return res
+
     def type_text(self, element_id=None, text="", clear=True, submit=False, label=None):
         eid = self._resolve(element_id, label)
         item = self.items.get(eid) or {"id": eid, "label": label or ""}
-        result = self._act(eid, "set", value=text, clear=clear, pick=not is_search_field(item) and not submit, keep_focus=submit)
+        pick = not is_search_field(item) and not submit
+        result = self._native_type(eid, text, clear, pick, keep_focus=submit) or \
+            self._act(eid, "set", value=text, clear=clear, pick=pick, keep_focus=submit)
         self.last_typed = item
         if submit:
             self._act(eid, "press", key="Enter")
@@ -1351,7 +1377,8 @@ class ExtensionSession(_Common):
                 elif op == "click":
                     self._act(eid, "click")
                 elif op in ("type", "fill"):
-                    result = self._act(eid, "set", value=str(val), pick=not is_search_field(item))
+                    result = self._native_type(eid, str(val), True, not is_search_field(item)) or \
+                        self._act(eid, "set", value=str(val), pick=not is_search_field(item))
                     if result.get("combo"):
                         if result.get("picked"):
                             note = f" -> picked \"{result['picked']}\""

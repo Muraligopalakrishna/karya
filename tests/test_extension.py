@@ -225,6 +225,20 @@ class FakeExtension:
         if method == "act":
             return pg.evaluate("async (a) => {\n" + browser.PAGE_JS + "\nreturn await window.__karya.act(a.op, a.args);\n}",
                                {"op": p["op"], "args": p.get("args") or {}})
+        if method == "type_native":     # like Chrome's own key input into the field page.js focused
+            def act(op, args):
+                return pg.evaluate("async (a) => {\n" + browser.PAGE_JS + "\nreturn await window.__karya.act(a.op, a.args);\n}",
+                                   {"op": op, "args": args})
+            focus = act("focusfield", {"id": p["id"]})
+            if not focus or focus.get("ok") is False:
+                return focus
+            if p.get("clear", True) and focus.get("had"):
+                pg.keyboard.press("Control+A")
+                pg.keyboard.press("Backspace")
+            if p.get("value"):
+                pg.keyboard.insert_text(p["value"])
+            return act("afterfill", {"id": p["id"], "value": p.get("value", ""), "clear": p.get("clear", True),
+                                     "pick": p.get("pick", True), "keep_focus": p.get("keep_focus", False)})
         if method == "upload_native":   # like Chrome's DOM.setFileInputFiles on the input page.js marked
             marked = pg.evaluate("async (a) => {\n" + browser.PAGE_JS + "\nreturn await window.__karya.act(a.op, a.args);\n}",
                                  {"op": "upload", "args": {"id": p["id"], "mark": True}})
@@ -658,3 +672,30 @@ def test_a_custom_dropdown_is_opened_and_picked(page, chrome_link, monkeypatch):
     toggle = next(it for it in browser.ext_session.items.values() if it.get("label") == "Toggle")
     miss = run_tool("browser_select", {"element_id": toggle["id"], "option": "Chief Wizard"})
     assert miss.startswith("ERROR") and "Its options: Software Engineer | Product Manager" in miss
+
+
+# Workday kept every typed field "invalid": its form only takes what a person types (trusted input events).
+TRUSTED_ONLY = """<!doctype html><html><body>
+<label>Given Name* <input id="gn" required></label>
+<label>Email Address* <input id="em" type="email" required></label>
+<label>Phone Number* <input id="ph" required></label>
+<ul role="listbox"><li role="option">India (+91)</li></ul>
+<script>
+window.__model = {};
+for (const id of ['gn', 'em', 'ph']) document.getElementById(id).addEventListener('input', (e) => {
+  if (e.isTrusted) window.__model[id] = e.target.value; });
+</script></body></html>"""
+
+
+def test_typing_is_done_like_a_person_so_strict_forms_take_it(page, chrome_link, monkeypatch):
+    page.set_content(TRUSTED_ONLY)
+    monkeypatch.setattr(chrome_link, "request", _same_page_request(chrome_link))
+    run_tool("browser_snapshot", {})
+    ids = {it.get("label", "").split("*")[0].strip(): it["id"] for it in browser.ext_session.items.values()}
+    out = run_tool("browser_fill", {"fields": {str(ids["Given Name"]): "Asha", str(ids["Email Address"]): "asha@example.org"}})
+    assert page.evaluate("() => window.__model") == {"gn": "Asha", "em": "asha@example.org"}, out
+    assert "suggestion" not in out                                  # "Email Address" isn't a place to pick from
+    page.evaluate("() => { document.getElementById('ph').value = '+91 0000'; }")
+    run_tool("browser_type", {"element_id": ids["Phone Number"], "text": "9000000000"})
+    assert page.evaluate("() => [document.getElementById('ph').value, window.__model.ph]") == ["9000000000", "9000000000"]
+    assert "type_native" in chrome_link.calls

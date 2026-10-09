@@ -429,7 +429,7 @@ def import_resume(path: str | None = None, resume=None):
     "job_description": P("string", "Key requirements, if there's no id or URL"),
     "resume": P("object", "Only when Karya asks for it: the tailored resume JSON you wrote (same shape as the master "
                           "resume, plus \"suggested_skills\")"),
-}, group="resume")
+}, group="resume", precheck=lambda args: __import__("karya.tools.jobs", fromlist=["picked_only"]).picked_only(args))
 def tailor_resume(job_url: str = "", job_title: str = "", company: str = "", job_description: str = "", job_id: str = "",
                   resume=None):
     if resume is not None:          # written by the AI app using Karya: checked against the master like any other
