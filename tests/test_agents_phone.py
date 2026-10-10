@@ -117,9 +117,15 @@ def test_whatsapp_self_chat_check():
 class FakePage:
     """WhatsApp Web as the bridge sees it: a QR screen first, then the user's own chat."""
 
-    def __init__(self, bridge, screens):
+    def __init__(self, bridge, screens, settle=True):
+        screens = [s for screen in screens for s in ([screen, screen] if settle and screen.get("state") == "chat" else [screen])]
         self.bridge, self.screens, self.typed, self.gotos = bridge, list(screens), [], []
         self.keyboard = self
+
+    closed = False
+
+    def is_closed(self):
+        return self.closed
 
     def evaluate(self, js):
         screen = self.screens.pop(0)
@@ -169,6 +175,86 @@ def test_whatsapp_bridge_links_then_takes_tasks_and_replies(monkeypatch, tmp_pat
     sent = "".join(page.typed)
     assert "[Karya] Linked." in sent and "before the link" not in sent
     assert bridge.state == "opening"                                     # Mom's chat: waits for the user's own
+
+
+def test_whatsapp_a_message_starting_with_the_karya_tag_is_still_the_users():
+    """The user, 2026-10-11, typed "[Karya] how many followers..." (copying Karya's tag) and got no answer."""
+    seen, seen_set, sent = deque(maxlen=400), set(), deque(maxlen=60)
+    whatsapp.new_commands(_msgs(("A", True, "[Karya] Linked. Send me tasks here")), seen, seen_set, sent, primed=False)
+    sent.append(whatsapp._norm("[Karya] On it."))
+    later = _msgs(("A", True, "[Karya] Linked. Send me tasks here"), ("B", True, "[Karya] how many followers do I have"),
+                  ("C", True, "[Karya] On it."))
+    assert whatsapp.new_commands(later, seen, seen_set, sent, primed=True) == ["[Karya] how many followers do I have"]
+
+
+def test_whatsapp_karyas_own_messages_are_known_after_a_restart(monkeypatch):
+    monkeypatch.setattr(whatsapp, "POLL_SECONDS", 0)
+    first = whatsapp.WhatsAppBridge("917000000000", lambda text: None)
+    first.send("Done: 2 jobs applied.")
+    chat = lambda *m: {"state": "chat", "title": "Asha (You)", "box": True, "messages": _msgs(*m)}  # noqa: E731
+    page1 = FakePage(first, [chat(("A", True, "hello"))])
+    first._loop(page1)
+    assert "[Karya] Done: 2 jobs applied." in "".join(page1.typed)
+    tasks = []
+    second = whatsapp.WhatsAppBridge("917000000000", tasks.append)       # Karya restarted
+    page = FakePage(second, [chat(("A", True, "hello")),
+                             chat(("A", True, "hello"), ("B", True, "[Karya] Done: 2 jobs applied."),
+                                  ("C", True, "[Karya] check gold"))])
+    second._loop(page)
+    assert tasks == ["[Karya] check gold"]                               # its own report isn't read as a task
+
+
+def test_whatsapp_waits_until_the_chat_is_drawn_before_deciding_what_is_new(monkeypatch):
+    """The user, 2026-10-11: WhatsApp drew only his newest message first, Karya took it for old history and never
+    answered it."""
+    monkeypatch.setattr(whatsapp, "POLL_SECONDS", 0)
+    seen = [m["id"] for m in _msgs(("A", True, "old 1"), ("B", True, "[Karya] old reply"))]
+    whatsapp._save_state({"seen": seen, "welcomed": True})
+    tasks = []
+    bridge = whatsapp.WhatsAppBridge("917000000000", tasks.append)
+    chat = lambda *m: {"state": "chat", "title": "Asha (You)", "box": True, "messages": _msgs(*m)}  # noqa: E731
+    full = chat(("A", True, "old 1"), ("B", True, "[Karya] old reply"), ("C", True, "how many followers do I have"))
+    page = FakePage(bridge, [chat(("C", True, "how many followers do I have")),   # drawn first, alone
+                             full, full], settle=False)
+    bridge._loop(page)
+    assert tasks == ["how many followers do I have"]
+
+
+def test_whatsapp_old_tasks_are_not_run_late():
+    now = datetime(2026, 10, 11, 9, 0)
+    assert whatsapp.msg_time("12:27 am, 11/10/2026", now) == datetime(2026, 10, 11, 0, 27).timestamp()
+    assert whatsapp.msg_time("18:05, 10/11/2026", datetime(2026, 11, 10, 19, 0)) == datetime(2026, 11, 10, 18, 5).timestamp()
+    assert whatsapp.msg_time("6:30 PM, 10/9/2026", datetime(2026, 10, 9, 20, 0)) == datetime(2026, 10, 9, 18, 30).timestamp()
+    assert whatsapp.msg_time("2026-10-11, 07:15", now) == datetime(2026, 10, 11, 7, 15).timestamp()
+    assert whatsapp.msg_time("soon", now) is None
+    seen, seen_set, sent, stale = deque(maxlen=400), set(), deque(maxlen=60), []
+    whatsapp.new_commands(_msgs(("A", True, "x")), seen, seen_set, sent, primed=False)
+    msgs = _msgs(("A", True, "x"), ("B", True, "apply to Swiggy"), ("C", True, "check gold"))
+    msgs[1]["stamp"] = "11:00 pm, 10/10/2026"          # ten hours before "now"
+    msgs[2]["stamp"] = "8:55 am, 11/10/2026"
+    fresh = whatsapp.new_commands(msgs, seen, seen_set, sent, primed=True, stale=stale, now=now.timestamp())
+    assert fresh == ["check gold"] and stale == ["apply to Swiggy"]
+
+
+def test_whatsapp_loop_ends_when_its_window_is_closed(monkeypatch):
+    monkeypatch.setattr(whatsapp, "POLL_SECONDS", 0)
+    bridge = whatsapp.WhatsAppBridge("917000000000", lambda text: None)
+    page = FakePage(bridge, [{"state": "loading"}] * 3)
+    page.closed = True
+    bridge._loop(page)                                                   # returns, so _run opens a new window
+    assert not bridge._stop.is_set()
+
+
+def test_phone_message_addressed_to_karya_drops_the_tag():
+    async def go():
+        hub, ch = _channel()
+        await ch.on_message("[Karya] how many followers do I have in insta")
+        await ch.on_message("Karya, status")
+        while hub.busy_now():
+            await asyncio.sleep(0.01)
+        assert hub.agent.seen == ["how many followers do I have in insta"]
+        assert ch.bridge.out[-1].startswith("Chat: ")                    # "Karya, status" is the STATUS command
+    asyncio.run(go())
 
 
 def test_owner_number_from_profile(monkeypatch):

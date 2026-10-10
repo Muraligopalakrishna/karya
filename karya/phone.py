@@ -17,6 +17,7 @@ from .registry import CONFIRM, P, tool
 CHANNEL: "PhoneChannel | None" = None
 _YES = re.compile(r"^\W*(y|yes|yeah|yep|yup|ok|okay|approve[d]?|go( ahead)?|do it|sure|haan?|ha|han|ji)\b", re.I)
 _NO = re.compile(r"^\W*(n|no|nope|deny|denied|don'?t|do not|cancel|nahi|nah|na)\b", re.I)
+_TO_KARYA = re.compile(r"^\s*(?:\[\s*karya\s*\]|@karya\b|karya\s*[:,\-])\s*", re.I)   # "[Karya] ...", "Karya, ..."
 _BARE = re.compile(r"^\W*(y|yes|yeah|yep|ok|okay|approve[d]?|sure|n|no|nope|deny|nahi|na)\W*$", re.I)
 HELP = ("Send me any task, e.g. \"find PM jobs in Dubai and apply\" or \"what's the gold sentiment\". Give a task to "
         "one of your bots with \"@Name task\" (e.g. \"@Maya apply to 3 new PM jobs\"). Commands: STATUS (what's "
@@ -158,6 +159,7 @@ class PhoneChannel:
     # ----- phone -> Karya
     async def on_message(self, text: str) -> None:
         text = str(text or "").strip()
+        text = _TO_KARYA.sub("", text, count=1).strip() or text
         low = text.lower()
         hub = self.hub
         self.waiting = [e for e in self.waiting
