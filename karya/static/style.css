@@ -129,3 +129,29 @@ button.small { padding: 3px 10px; font-size: 12px; }
 .job-info a:hover { text-decoration: underline; }
 .job-info .meta { margin-top: 2px; }
 .job-row .skip { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* Setup: Connect your AI, phone, background agents, one-click MCP */
+.setup .connect-box, .setup .phone-box, .setup .agents-box { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.setup h4 { margin: 12px 0 6px; font-size: 14px; }
+.ai-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.ai-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; }
+.ai-name { font-weight: 600; min-width: 180px; }
+.ai-how { color: var(--muted); font-size: 12px; min-width: 90px; }
+.ai-row select { flex: 1 1 220px; background: var(--bg); color: var(--text); }
+.key-form, .phone-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.key-form input, .phone-row input { flex: 1 1 260px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; color: var(--text); }
+.choose-service { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0; font-size: 13px; }
+.sub-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; font-size: 13px; }
+.sub-row .sub-name { font-weight: 600; min-width: 180px; }
+.sub-row .hint { flex-basis: 100%; margin: 0; }
+.sub-row code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.setup a { color: #8ab4ff; }
+.phone-state { margin: 4px 0; }
+.agent-list { list-style: none; padding: 0; margin: 6px 0; }
+.agent-list li { border-bottom: 1px solid var(--border); padding: 6px 0; }
+.agent-title { font-weight: 600; }
+.agent-actions { display: flex; gap: 6px; margin-top: 4px; }
+.mcp-apps { list-style: none; padding: 0; margin: 6px 0; }
+.mcp-apps li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 3px 0; font-size: 13px; }
+details.advanced { margin: 8px 0; }
+details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 4px 0; }

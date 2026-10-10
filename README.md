@@ -26,6 +26,8 @@
   You get the crowd's mood with counts per source, the price levels traders mention (targets, stops, support, resistance), what they're talking about, and real quotes with links. It reports opinions, not advice.
 - **Crawl any website.** `crawl_site` goes through a whole site and returns the pages and passages about your topic: forums, blogs, news, docs and company sites. Name a site ("linkedin", "x", "reddit") with your words and it starts at that site's own search. Public sites are read over plain HTTP, following robots.txt. Sites that need a login (LinkedIn, X, Facebook, Instagram) are read in Karya's browser, where you're logged in, a few seconds per page and at most 30 pages per crawl. It only reads: it never clicks, posts, follows or logs in, and it stops at login pages and security checks.
 - **Browser automation** like rtrvr.ai: posting on LinkedIn, X, Reddit and more, filling forms, any site you're logged into. Pages without buttons work too: canvas, maps and game boards (it can play chess on chess.com and lichess).
+- **Background agents.** Ask for anything that should happen regularly ("every morning at 9 find new PM jobs in Hyderabad and apply to the best 3", "check gold sentiment twice a day and tell me") and Karya makes an agent for it: it runs by itself on that schedule and reports in the chat and on WhatsApp. Pause, run or delete agents in Setup or by asking. They run while Karya is running on your PC.
+- **Tasks from your phone (WhatsApp).** Setup > "Give Karya tasks from your phone" opens WhatsApp Web in its own window; link it once (WhatsApp > Linked devices > Link a device). Then message yourself on WhatsApp: Karya does the task, asks you there before it sends, posts or submits (reply YES or NO, or the numbers of the jobs to apply to) and reports back. STATUS, STOP and HELP work too. Only your own "Message yourself" chat is read, and logins never go over WhatsApp. An approval nobody answers within 30 minutes is refused.
 - **PC help.** Diagnose and fix problems, manage files, run commands (it asks first).
 - **Websites.** Build, preview and publish to Vercel.
 
@@ -33,12 +35,12 @@
 
 1. Install [Python 3.11+](https://www.python.org/downloads/) (tick "Add to PATH") and Google Chrome.
 2. Download Karya: on https://github.com/Muraligopalakrishna/karya click **Code → Download ZIP** and unzip it (or `git clone https://github.com/Muraligopalakrishna/karya.git`), then double-click **`start.bat`**. The first run installs everything.
-3. The chat opens in your browser. Click **Setup** and add any AI key you have, free or paid: OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI, Together, Cerebras, or any OpenAI-compatible API. Karya checks each key and learns its limits. On a small free plan it sends small requests and pauses at the limit; on a big paid plan it runs at full speed. Free options:
-   - Gemini: https://aistudio.google.com/apikey
-   - Groq: https://console.groq.com/keys
-   - OpenRouter (free models): https://openrouter.ai/keys
+3. The chat opens in your browser. Click **Setup**. Under **Connect your AI** do one of these:
+   - **Paste any AI key** into the one box. Karya works out which service it's from (OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI, Together, Cerebras or Kiro), saves it and checks it. Free keys: [Gemini](https://aistudio.google.com/apikey), [Groq](https://console.groq.com/keys), [OpenRouter](https://openrouter.ai/keys).
+   - **Sign in with Kiro** (Google, GitHub or AWS Builder ID). No key needed. It needs the [Kiro CLI](https://kiro.dev/downloads). A Kiro API key (`ksk_...`) works too.
+   - **Use your ChatGPT plan** (Plus, Pro, Business, Edu) through the official Codex CLI: install it once with `npm install -g @openai/codex` (needs [Node.js](https://nodejs.org)), then click **Sign in with ChatGPT**. Karya runs Codex with its shell, web, apps and browser switched off, so Codex only thinks and Karya does the work. It uses your plan's Codex limits.
 
-   **Kiro subscription:** paste a Kiro API key (`ksk_...`, from app.kiro.dev → API keys; Pro plans and up) into the Kiro field. Kiro keys aren't OpenAI-style keys, so Karya runs them through the official Kiro CLI (install it from kiro.dev), with its own private settings folder. The default model is Qwen3 Coder Next (0.05× credits), with GLM-5 as the backup; set `KIRO_MODEL` to change it.
+   Then pick the **model** from the list your key or plan offers, and which AI goes first. Karya moves to the next one when one is busy or out of credits. It also learns each key's limits: small free plans get small requests and pauses, big paid plans run at full speed. Every service is still listed one by one under "advanced" in Settings.
 4. Optional, in the same Setup panel:
    - your Gmail address plus an [App Password](https://myaccount.google.com/apppasswords), to send and read email
    - your resume path
@@ -66,7 +68,9 @@ Chrome doesn't let programs control your normal profile directly, so this extens
 
 ## Use Karya from other AI apps and CLIs (MCP)
 
-Claude Desktop, Cursor, Kiro, VS Code, Windsurf, OpenClaw, Claude Code, Codex, Gemini CLI and other MCP apps can use Karya's tools with **their own AI model**: browsing and posting in a real Chrome, logins from your vault, email, job search, tailored resumes and applications. Setup → "Use Karya from other AI apps and CLIs" shows the exact config with copy buttons. For apps with a config file it looks like this (use your Karya folder):
+Claude Desktop, Cursor, Kiro, VS Code, Windsurf, OpenClaw, Claude Code, Codex, Gemini CLI and other MCP apps can use Karya's tools with **their own AI model**: browsing and posting in a real Chrome, logins from your vault, email, job search, tailored resumes and applications.
+
+Setup → "Use Karya from other AI apps and CLIs" lists the AI apps installed on your PC with an **Add Karya** button each (Claude Code, Codex, Kiro, Cursor, Claude Desktop, VS Code, Gemini CLI, Windsurf, Qwen Code). It adds Karya to that app's config and keeps your other servers; the old file is saved next to it as `.before-karya`. Restart the app afterwards. To add it by hand, the same panel shows the exact config with copy buttons. For apps with a config file it looks like this (use your Karya folder):
 
 ```json
 { "mcpServers": { "karya": { "command": "C:\\Karya\\.venv\\Scripts\\python.exe", "args": ["C:\\Karya\\karya_mcp.py"] } } }

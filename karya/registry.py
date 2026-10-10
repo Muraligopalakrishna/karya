@@ -121,6 +121,10 @@ GROUP_KEYWORDS = {
     "resume": r"resume|\bcv\b|apply|application|job|hiring|internship|cover letter",
     "accounts": r"log ?in|sign ?in|sign ?up|signup|register|account|password|credential|apply|application|linkedin|"
                 r"upwork|freelancer|workatastartup|easy apply",
+    "agents": r"\bagents?\b|\bbots?\b|schedul|every (day|morning|evening|night|hour|week|monday|tuesday|wednesday|"
+              r"thursday|friday|saturday|sunday|\d+ ?(min|hour|h\b))|daily|weekly|hourly|twice a day|each (day|morning)|"
+              r"remind|recurring|in the background|keep (an eye|watching|checking)|watch (for|my)|monitor|alert me|"
+              r"whatsapp|from my (phone|mobile)|on my (phone|mobile)",
 }
 ALL_GROUPS = sorted(set(GROUP_KEYWORDS) | {"web"})
 CORE_TOOLS = ["web_search", "fetch_url", "news_search", "find_contacts", "remember", "enable_tools", "ask_user", "task_status"]

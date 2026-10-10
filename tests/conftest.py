@@ -58,6 +58,11 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(outbox, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(focus, "CURRENT", {})
     monkeypatch.setattr(settings, "keep_going", False)
+    from karya import codex_bridge, scheduler, whatsapp
+    monkeypatch.setattr(scheduler, "AGENTS_FILE", tmp_path / "agents.json")
+    monkeypatch.setattr(whatsapp, "STATE_FILE", tmp_path / "whatsapp_state.json")
+    monkeypatch.setattr(whatsapp, "PROFILE", tmp_path / "whatsapp_profile")
+    monkeypatch.setattr(codex_bridge, "WORKDIR", tmp_path / "codex_brain")
     # Never touch the user's real browser or accounts from a test: an empty throw-away profile, no visible window,
     # Karya's own window (not the user's Chrome), and no sending through Gmail in a browser unless a test fakes it.
     from karya.tools import browser, email_tools

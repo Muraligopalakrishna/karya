@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import re
 import secrets
+import subprocess
 import sys
 import uuid
 import webbrowser
@@ -54,10 +55,48 @@ class Hub:
         self.asks: dict[str, tuple[asyncio.Future, dict]] = {}
         self.task: asyncio.Task | None = None
         self.mcp_client: str | None = None   # the AI app (over MCP) whose tool call is running right now
+        self.source, self.label = "chat", "the chat"   # who started the running task: chat, phone, agent:<id>
+        self.queue: list[dict] = []          # tasks that came in (WhatsApp, background agents) while Karya was busy
+        self.listeners: list = []            # WhatsApp and the agents' report keeper: on_confirm, on_ask, on_done
 
     @property
     def ws(self) -> WebSocket | None:  # kept for older callers/tests
         return next(iter(self.clients), None)
+
+    def busy_now(self) -> bool:
+        return bool(self.agent.busy or self.mcp_client or (self.task is not None and not self.task.done()))
+
+    def _wait_limit(self) -> float | None:
+        """Nobody may be at the PC for a task from the phone or a background agent: an unanswered approval is
+        refused after a while instead of holding Karya forever."""
+        if self.source == "chat":
+            return None
+        from .scheduler import UNATTENDED_MINUTES
+        return UNATTENDED_MINUTES * 60.0
+
+    async def _tell(self, method: str, *args) -> None:
+        for listener in list(self.listeners):
+            try:
+                await getattr(listener, method)(*args)
+            except Exception:  # noqa: BLE001 - a listener (e.g. WhatsApp) failing never stops the task
+                pass
+
+    async def submit(self, text: str, source: str = "chat", label: str = "") -> str:
+        """Start a task now, or queue it while Karya is busy. Returns 'started' or 'queued'."""
+        label = label or source
+        if self.busy_now():
+            self.queue.append({"text": text, "source": source, "label": label})
+            await self.send({"type": "note", "text": f"Queued a task from {label}: {text[:150]}"})
+            return "queued"
+        await self.start_run(text, source, label)
+        return "started"
+
+    async def next_queued(self) -> bool:
+        if self.queue and not self.busy_now():
+            item = self.queue.pop(0)
+            await self.start_run(item["text"], item["source"], item["label"])
+            return True
+        return False
 
     async def send(self, event: dict) -> None:
         for ws in list(self.clients):
@@ -73,10 +112,17 @@ class Hub:
         future = asyncio.get_running_loop().create_future()
         self.pending[request["id"]] = (future, request)
         await self.send({"type": "confirm", **request})
+        await self._tell("on_confirm", request)
         from .ext_link import link
         link.notify("attention", {"on": True, "text": str(request.get("summary") or "approval needed")[:150]})
         try:
-            approved = await future
+            limit = self._wait_limit()
+            try:
+                approved = await (asyncio.wait_for(future, limit) if limit else future)
+            except asyncio.TimeoutError:
+                approved = False
+                await self.send({"type": "note", "text": f"Nobody answered for {int(limit // 60)} minutes, so Karya "
+                                                         "didn't do it."})
             await self.send({"type": "confirm_done", "id": request["id"], "approved": bool(approved)})
             return approved
         finally:
@@ -103,10 +149,15 @@ class Hub:
         future = asyncio.get_running_loop().create_future()
         self.asks[request["id"]] = (future, request)
         await self.send({"type": "ask", **request})
+        await self._tell("on_ask", request)
         from .ext_link import link
         link.notify("attention", {"on": True, "text": "Karya is asking you something in its chat"})
         try:
-            answer = await future
+            limit = self._wait_limit()
+            try:
+                answer = await (asyncio.wait_for(future, limit) if limit else future)
+            except asyncio.TimeoutError:
+                answer = None
             await self.send({"type": "ask_done", "id": request["id"], "answered": bool(answer)})
             return answer
         finally:
@@ -119,21 +170,50 @@ class Hub:
         if entry and not entry[0].done():
             entry[0].set_result(data)
 
-    async def start_run(self, text: str) -> None:
+    async def start_run(self, text: str, source: str = "chat", label: str = "") -> None:
+        self.source, self.label = source, label or ("the chat" if source == "chat" else source)
+
         async def runner():
             await self.send({"type": "busy", "value": True})
+            final = ""
             try:
-                await self.agent.run(text, self.send, self.confirm, self.ask)
+                if source != "chat":  # the chat page shows what came from the phone or an agent
+                    await self.send({"type": "user", "text": text, "via": self.label})
+                final = await self.agent.run(text, self.send, self.confirm, self.ask) or ""
             except Exception as exc:  # keep the server alive whatever happens
-                await self.send({"type": "error", "text": f"Internal error: {type(exc).__name__}: {exc}"})
+                final = f"Internal error: {type(exc).__name__}: {exc}"
+                await self.send({"type": "error", "text": final})
             finally:
                 await self.send({"type": "busy", "value": False})
+                self.source, self.label = "chat", "the chat"
+                await self._tell("on_done", source, text, final)
+                if self.queue and not self.mcp_client:
+                    item = self.queue.pop(0)
+                    await self.start_run(item["text"], item["source"], item["label"])
         self.task = asyncio.create_task(runner())
 
 
 def create_app(agent: Agent | None = None, token: str | None = None, port: int | None = None,
-               extra_hosts: set[str] | None = None) -> FastAPI:
-    app = FastAPI(title="Karya", docs_url=None, redoc_url=None, openapi_url=None)
+               extra_hosts: set[str] | None = None, background: bool = False) -> FastAPI:
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """The real app (not tests) runs background agents and takes tasks from WhatsApp."""
+        if background:
+            from . import phone, scheduler
+            hub: Hub = app.state.hub
+            channel = phone.start(hub, asyncio.get_running_loop())
+            hub.listeners += [scheduler.Hooks(), channel]
+            app.state.scheduler_task = asyncio.create_task(scheduler.loop(hub))
+        yield
+        if background:
+            app.state.scheduler_task.cancel()
+            from . import phone
+            if phone.CHANNEL is not None and phone.CHANNEL.bridge is not None:
+                phone.CHANNEL.bridge.stop()
+
+    app = FastAPI(title="Karya", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.token = token or secrets.token_urlsafe(24)
     app.state.port = port or settings.port
     app.state.hub = Hub(agent or Agent())
@@ -233,7 +313,11 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             except (OSError, ValueError):
                 checks = {}
         from .ext_link import EXTENSION_DIR, link
+        from . import phone, scheduler
         return {**settings.status(), "tools": len(TOOLS), "auto_mode": hub.agent.auto_mode, "busy": hub.agent.busy,
+                "running": hub.label if hub.busy_now() else None, "queued": len(hub.queue),
+                "whatsapp": phone.CHANNEL.status() if phone.CHANNEL else {"state": "off", "detail": ""},
+                "agents": [scheduler._row(a) for a in scheduler.load()],
                 "browser_link": link.status(), "extension_dir": str(EXTENSION_DIR), "browser_mode": settings.browser_mode,
                 "checks": {k: {f: v.get(f) for f in ("ok", "model", "plan", "tokens_per_minute", "summary", "error")}
                            for k, v in checks.items() if k in {p.name for p in settings.providers}}}
@@ -277,6 +361,130 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         hub: Hub = app.state.hub
         names = {p.name for p in hub.agent.llm.providers if not p.slow}
         return {"checks": await asyncio.to_thread(_check_providers, hub.agent.llm, names)}
+
+    # ---------------------------------------------------------------- Setup > Connect your AI
+    def refresh_ai() -> None:
+        from .llm import LLMClient
+        app.state.hub.agent.llm = LLMClient(settings.providers)  # used from the next step on
+
+    async def check(name: str) -> list[dict]:
+        return await asyncio.to_thread(_check_providers, app.state.hub.agent.llm, {name})
+
+    @app.get("/api/ai")
+    async def ai_overview(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import connect
+        return await asyncio.to_thread(connect.overview)
+
+    @app.post("/api/ai")
+    async def ai_action(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import connect
+        try:
+            body = dict(await request.json())
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        action, name = str(body.get("action", "")), str(body.get("provider", "")).lower()
+        try:
+            if action == "key":
+                out = await asyncio.to_thread(connect.save_key, str(body.get("key", "")), str(body.get("service", "")))
+                if out.get("saved"):
+                    refresh_ai()
+                    out["checks"] = await check(out["saved"])
+            elif action == "models":
+                out = {"provider": name, "models": await asyncio.to_thread(connect.models_for, name, bool(body.get("fresh")))}
+            elif action == "model":
+                out = connect.set_model(name, str(body.get("model", "")))
+                refresh_ai()
+                out["checks"] = await check(name)
+            elif action == "first":
+                out = connect.use_first(name)
+                refresh_ai()
+            elif action == "remove":
+                out = await asyncio.to_thread(connect.remove, name)
+                refresh_ai()
+            elif action == "login":
+                out = await asyncio.to_thread(connect.start_login, name, str(body.get("method", "")))
+            elif action == "login_status":
+                out = connect.login_progress(name)
+                if out.get("state") == "done" and not body.get("checked"):
+                    refresh_ai()
+                    out["checks"] = await check(name)
+            elif action == "login_cancel":
+                connect.cancel_login(name)
+                out = {"state": "idle"}
+            elif action == "use_codex":
+                out = connect.use_codex()
+                refresh_ai()
+                out["checks"] = await check("codex")
+            else:
+                return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {**out, "overview": connect.overview(include_logins=False)}
+
+    @app.get("/api/mcp/apps")
+    async def mcp_apps_list(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import mcp_apps
+        return {"apps": await asyncio.to_thread(mcp_apps.overview)}
+
+    @app.post("/api/mcp/apps")
+    async def mcp_apps_connect(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import mcp_apps
+        try:
+            body = dict(await request.json())
+            return await asyncio.to_thread(mcp_apps.connect, str(body.get("app", "")))
+        except (ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
+            return JSONResponse({"error": str(exc)[:300]}, status_code=400)
+
+    # ---------------------------------------------------------------- Setup > Phone and background agents
+    @app.post("/api/phone")
+    async def phone_action(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import phone
+        if phone.CHANNEL is None:
+            return JSONResponse({"error": "WhatsApp needs Karya's app (start.bat)."}, status_code=400)
+        try:
+            body = dict(await request.json())
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        if body.get("action") == "disconnect":
+            return await asyncio.to_thread(phone.CHANNEL.disable)
+        number = re.sub(r"\D", "", str(body.get("number", "")))
+        if number:
+            if not 10 <= len(number) <= 15:
+                return JSONResponse({"error": "Type your WhatsApp number with its country code, e.g. +91 98xxxxxxxx."},
+                                    status_code=400)
+            from .memory import memory_store
+            data = memory_store.load()
+            data.setdefault("profile", {})["whatsapp"] = "+" + number
+            memory_store.save(data)
+        return await asyncio.to_thread(phone.CHANNEL.enable, 20.0)
+
+    @app.post("/api/agents")
+    async def agents_action(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import scheduler
+        try:
+            body = dict(await request.json())
+            action, key = str(body.get("action", "")), str(body.get("agent", ""))
+            if action == "delete":
+                scheduler.delete(key)
+            elif action in ("pause", "resume", "run"):
+                scheduler.update(key, enabled=action != "pause" if action != "run" else None, run_now=action == "run")
+            else:
+                return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {"agents": [scheduler._row(a) for a in scheduler.load()]}
 
     @app.get("/api/accounts")
     async def get_accounts(request: Request, token: str = ""):
@@ -335,7 +543,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                     if not text:
                         continue
                     if hub.agent.busy:
-                        await hub.send({"type": "error", "text": "I'm still working on the last request. Press Stop first."})
+                        running = "the last request" if hub.source == "chat" else f"a task from {hub.label}"
+                        await hub.send({"type": "error", "text": f"I'm still working on {running}. Press Stop first."})
                         continue
                     if hub.mcp_client:
                         await hub.send({"type": "error", "text": f"{hub.mcp_client} is using Karya right now. Try again in "
@@ -512,7 +721,7 @@ def main() -> None:
     if not _port_free(port):
         print(f"\n  Port {port} is used by another program. Set a different PORT in .env and start again.\n", flush=True)
         sys.exit(1)
-    app = create_app(token=token, port=port)
+    app = create_app(token=token, port=port, background=True)
     try:
         from .ext_link import write_extension_config
         write_extension_config(port, token)  # lets Karya Browser Link (in your own Chrome) connect by itself

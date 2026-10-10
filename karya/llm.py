@@ -374,6 +374,8 @@ class LLMClient:
         """Returns ('ok', message) | ('rate', seconds) | ('gone'|'auth'|'next_model'|'next_provider', None)."""
         if p.name == "kiro":
             return self._try_kiro(p, model, messages, tools, trim, errors)
+        if p.name == "codex":
+            return self._try_kiro(p, model, messages, tools, trim, errors, codex=True)
         reasoning = p.model_reasoning.get(model, p.reasoning_effort)
         tool_retries, shrink, too_large = 1, 1.0, 0
         for _ in range(6):
@@ -468,7 +470,8 @@ class LLMClient:
             errors.append(f"{p.name}:{model}: no usable answer after several tries")
         return "next_model", None
 
-    def _try_kiro(self, p: Provider, model: str, messages, tools, trim, errors) -> tuple[str, object]:
+    def _try_kiro(self, p: Provider, model: str, messages, tools, trim, errors, codex: bool = False) -> tuple[str, object]:
+        """Kiro and ChatGPT/Codex subscriptions: their CLIs take the whole step as text (same format for both)."""
         from . import kiro_bridge
         budget_tokens = self.budget_tokens(p, model)
         system_for = getattr(self, "_system_for", None)
@@ -486,15 +489,20 @@ class LLMClient:
         if budget_tokens:
             budget = min(budget, max(4000, int((budget_tokens - 600) * TEXT_CHARS_PER_TOKEN) - tool_chars))
         msgs = trim(messages, budget) if trim else messages
+        from . import codex_bridge
         try:
-            bridge = kiro_bridge.bridge_for(p.api_key, getattr(LANE, "name", "main"))
-            text = bridge.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout)
-        except kiro_bridge.KiroError as exc:
-            errors.append(f"kiro:{model}: {exc}")
+            if codex:
+                text = codex_bridge.BRAIN.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout,
+                                                 effort=p.reasoning_effort or "low")
+            else:
+                bridge = kiro_bridge.bridge_for(p.api_key, getattr(LANE, "name", "main"))
+                text = bridge.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout)
+        except (kiro_bridge.KiroError, codex_bridge.CodexError) as exc:
+            errors.append(f"{p.name}:{model}: {exc}")
             return {"auth": ("auth", None), "missing": ("next_provider", None), "model": ("gone", None),
                     "limit": ("rate", 300.0)}.get(exc.kind, ("next_model", None))
         if not text:
-            errors.append(f"kiro:{model}: empty answer")
+            errors.append(f"{p.name}:{model}: empty answer")
             return "next_model", None
         msg = kiro_bridge.parse_reply(clean_text(text))
         msg["content"] = clean_text(msg.get("content") or "")
@@ -534,6 +542,21 @@ def probe_provider(client: "LLMClient", p: Provider) -> dict:
     """One tiny request to check a key right after it's added: works or not, chosen model, limits and plan type.
     What it learns (tokens per minute, context window) is saved, so the agent sizes every request to fit."""
     out: dict = {"provider": p.name, "title": p.label_name or p.name, "ok": False}
+    if p.name == "codex":
+        from . import codex_bridge
+        started = time.time()
+        try:
+            reply = codex_bridge.BRAIN.prompt("Reply with exactly: OK", p.model, timeout=120, effort="low")
+        except codex_bridge.CodexError as exc:
+            out["error"] = str(exc)
+            return out
+        used = codex_bridge.BRAIN.last_usage or {}
+        out.update({"ok": bool(reply), "model": p.model, "plan": "paid", "tokens_per_minute": None,
+                    "budget_tokens": client.budget_tokens(p, p.model),
+                    "summary": (f"ChatGPT plan through Codex: answered in {time.time() - started:.1f}s"
+                                + (f" ({used.get('input_tokens', 0):,} tokens)" if used else "")
+                                + ". It uses your plan's Codex limits, not money per token.")})
+        return out
     if p.name == "kiro":
         from . import kiro_bridge
         bridge = kiro_bridge.bridge_for(p.api_key)

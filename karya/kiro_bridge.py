@@ -42,6 +42,18 @@ RESTART_AFTER = 150          # prompts per process (each step is a fresh session
 _SECRET_ENV = re.compile(r"(_API_KEY|_TOKEN|_SECRET|PASSWORD)$", re.I)
 
 
+def private_env(api_key: str = "login") -> dict:
+    """The Kiro CLI's environment: Karya's own private home (sessions, settings and a Setup sign-in stay in Karya's
+    folder, never in your Kiro profile). With a key it authenticates with the key; with "login" it uses the sign-in
+    done in Setup."""
+    env = {k: v for k, v in os.environ.items() if not _SECRET_ENV.search(k)}
+    env.update(NO_COLOR="1", USERPROFILE=str(HOME), HOME=str(HOME), APPDATA=str(HOME / "AppData" / "Roaming"),
+               LOCALAPPDATA=str(HOME / "AppData" / "Local"), KIRO_HOME=str(HOME / ".kiro"))
+    if api_key and api_key != "login":
+        env["KIRO_API_KEY"] = api_key
+    return env
+
+
 class KiroError(RuntimeError):
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -82,11 +94,7 @@ class KiroBridge:
 
     # ------------------------------------------------------------ process
     def _env(self) -> dict:
-        env = {k: v for k, v in os.environ.items() if not _SECRET_ENV.search(k)}
-        env.update(KIRO_API_KEY=self.api_key, NO_COLOR="1", USERPROFILE=str(HOME), HOME=str(HOME),
-                   APPDATA=str(HOME / "AppData" / "Roaming"), LOCALAPPDATA=str(HOME / "AppData" / "Local"),
-                   KIRO_HOME=str(HOME / ".kiro"))  # sessions and settings stay in Karya's folder, not your Kiro profile
-        return env
+        return private_env(self.api_key)
 
     @staticmethod
     def _write_files() -> None:
@@ -225,6 +233,28 @@ class KiroBridge:
                     if attempt == 2:
                         raise KiroError("other", "the Kiro CLI process stopped unexpectedly")
         raise KiroError("other", "unreachable")
+
+    def models(self) -> list[dict]:
+        """The models this Kiro subscription offers: [{'id', 'name', 'description'}] (from a fresh session)."""
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    if not self._alive():
+                        self.close()
+                        self._start()
+                    new = self._request("session/new", {"cwd": str(WORKDIR), "mcpServers": []}, timeout=60)
+                    if "error" in new:
+                        message = json.dumps(new["error"])[:300]
+                        raise KiroError(_classify(message), message)
+                    info = new["result"].get("models") or {}
+                    return [{"id": m["modelId"], "name": m.get("name") or m["modelId"],
+                             "description": str(m.get("description") or "")[:140]}
+                            for m in info.get("availableModels") or [] if m.get("modelId")]
+                except (BrokenPipeError, OSError):
+                    self.close()
+                    if attempt == 2:
+                        raise KiroError("other", "the Kiro CLI process stopped unexpectedly")
+        return []
 
     @staticmethod
     def _prune() -> None:
@@ -433,3 +463,89 @@ def parse_reply(text: str) -> dict:
         tool_calls.append({"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
                            "function": {"name": name, "arguments": arguments}})
     return {"role": "assistant", "content": text[:entries[0][0]].strip(), "tool_calls": tool_calls}
+
+
+
+# ---------------------------------------------------------------- "Sign in with Kiro" (no key needed)
+LOGIN: dict = {"state": "idle", "code": "", "url": "", "error": "", "proc": None}
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def login_status() -> dict:
+    """{'installed', 'signed_in', 'account'}: the sign-in in Karya's private Kiro folder (not the API key)."""
+    cli = find_cli()
+    if not cli:
+        return {"installed": False, "signed_in": False, "install": "https://kiro.dev/downloads"}
+    KiroBridge._write_files()
+    try:
+        r = subprocess.run([cli, "whoami", "--format", "json"], env=private_env("login"), cwd=WORKDIR,
+                           capture_output=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        data, _ = loads_lenient(r.stdout.decode("utf-8", "replace").strip() or "{}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"installed": True, "signed_in": False, "error": str(exc)[:160]}
+    data = data if isinstance(data, dict) else {}
+    account = data.get("account") if isinstance(data.get("account"), dict) else {}
+    kind = data.get("accountType") or account.get("accountType") or account.get("type") or ""
+    signed = r.returncode == 0 and bool(kind or data.get("email") or account)   # not signed in: {"account": null}
+    return {"installed": True, "signed_in": signed, "account": str(kind)[:40]}
+
+
+def start_login(method: str = "google") -> dict:
+    """Runs `kiro-cli login` in Karya's private Kiro folder: method google / github (your Kiro sign-in) or builder
+    (AWS Builder ID, with a code to confirm). Kiro opens the sign-in page in your browser."""
+    cli = find_cli()
+    if not cli:
+        return {"state": "error", "error": "Kiro CLI isn't installed. Get it from https://kiro.dev/downloads"}
+    proc = LOGIN.get("proc")
+    if proc is not None and proc.poll() is None:
+        return login_progress()
+    KiroBridge._write_files()
+    args = [cli, "login"] + (["--social", method] if method in ("google", "github")
+                             else ["--license", "free", "--use-device-flow"])
+    LOGIN.update(state="waiting", code="", url="", error="")
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env=private_env("login"), cwd=WORKDIR, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    LOGIN["proc"] = proc
+
+    def watch():
+        seen = ""
+        while True:
+            chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
+            if not chunk:
+                break
+            seen = (seen + _ANSI.sub("", chunk.decode("utf-8", "replace")))[-6000:]   # spinners use \r, not lines
+            code = re.search(r"Code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})", seen)
+            url = re.search(r"https://\S+", seen)
+            LOGIN["code"] = code.group(1) if code else LOGIN["code"]
+            LOGIN["url"] = url.group(0).rstrip(".,)") if url and not LOGIN["url"] else LOGIN["url"]
+            err = re.search(r"(?im)^.*\b(error|failed|denied|expired)\b.*$", seen)
+            LOGIN["error"] = err.group(0).strip()[:200] if err else ""
+        proc.wait()
+        LOGIN["state"] = "done" if proc.returncode == 0 and login_status().get("signed_in") else "failed"
+    threading.Thread(target=watch, daemon=True, name="kiro-login").start()
+    time.sleep(2.5)
+    return login_progress()
+
+
+def login_progress() -> dict:
+    return {k: LOGIN[k] for k in ("state", "code", "url", "error") if LOGIN.get(k)}
+
+
+def cancel_login() -> None:
+    proc = LOGIN.get("proc")
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+    LOGIN.update(state="idle", code="", url="", error="", proc=None)
+
+
+def logout() -> None:
+    cli = find_cli()
+    if cli:
+        try:
+            subprocess.run([cli, "logout"], env=private_env("login"), cwd=WORKDIR, capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    with _BRIDGES_LOCK:
+        for key in [k for k in _BRIDGES if k[0] == "login"]:
+            _BRIDGES.pop(key).close()

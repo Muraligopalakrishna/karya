@@ -191,6 +191,7 @@
           setBusy(!!ev.busy);
           break;
         case "busy": setBusy(ev.value); break;
+        case "user": addMessage("user", ev.text, ev.via ? `from ${ev.via}` : ""); break;
         case "status": statusLine.textContent = ev.text; statusLine.classList.add("typing"); break;
         case "note": addNote(ev.text); break;
         case "tool_call": addStep(ev); statusLine.textContent = `Using ${ev.name}`; break;
@@ -230,8 +231,13 @@
     if (!statusBox) {  // build the forms once; later status updates must not wipe what the user typed
       panel.replaceChildren();
       statusBox = document.createElement("div"); statusBox.className = "status-box";
-      panel.append(statusBox, settingsForm(), mcpBox(), accountsBox());
+      panel.append(statusBox, connectBox(), phoneBox(), agentsBox(), mcpBox(), settingsForm(), accountsBox());
     }
+    const phone = panel.querySelector(".phone-box"), agentList = panel.querySelector(".agents-box");
+    if (phone && phone.update) phone.update(s.whatsapp || {});
+    if (agentList && agentList.update) agentList.update(s.agents || []);
+    clearTimeout(renderSetup.poll);
+    if (["starting", "opening", "needs_qr"].includes((s.whatsapp || {}).state)) renderSetup.poll = setTimeout(loadStatus, 4000);
     statusBox.replaceChildren();
     const h = document.createElement("h3"); h.textContent = "Status";
     const ul = document.createElement("ul");
@@ -282,6 +288,252 @@
     return `\u2714 ${c.title || c.provider} works with ${c.model}${tpm}: ${c.summary || ""}`;
   }
 
+  // ---------- small helpers for the Setup sections ----------
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+  const button = (text, onClick, cls = "ghost small", label = "") => {
+    const b = el("button", cls, text); b.type = "button"; if (label) b.setAttribute("aria-label", label); b.addEventListener("click", onClick); return b;
+  };
+  const link = (text, href) => { const a = el("a", "", text); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; return a; };
+  async function api(path, body) {
+    const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    const r = await fetch(`${path}?token=${encodeURIComponent(token)}`, opts);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    return d;
+  }
+
+  // ---------- Connect your AI: paste any key, or sign in with a subscription, then pick the model ----------
+  function connectBox() {
+    const box = el("section", "connect-box"); box.setAttribute("aria-label", "Connect your AI");
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    const list = el("div", "ai-list");
+    const services = {};
+    let logins = {};
+    const timers = {};
+    const say = (text) => { msg.replaceChildren(); if (text) msg.appendChild(el("div", "", text)); };
+    const showChecks = (checks, first) => {
+      say(first || "");
+      (checks || []).forEach((c) => msg.appendChild(el("div", c.ok ? "ok" : "missing", describeCheck(c))));
+    };
+    const fail = (e) => say("\u2716 " + (e.message || e));
+
+    // paste a key
+    const keyForm = el("form", "key-form"); keyForm.autocomplete = "off";
+    const keyInput = el("input"); keyInput.type = "password"; keyInput.autocomplete = "off"; keyInput.spellcheck = false;
+    keyInput.placeholder = "Paste any AI key: OpenAI, Claude, Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI, Kiro...";
+    keyInput.setAttribute("aria-label", "Paste an AI key");
+    const keyBtn = el("button", "", "Connect"); keyBtn.type = "submit";
+    keyForm.append(keyInput, keyBtn);
+    const choose = el("div", "choose-service"); choose.hidden = true;
+    const free = el("p", "hint");
+    free.append("No key yet? Free ones: ", link("Gemini", "https://aistudio.google.com/apikey"), " \u00b7 ",
+      link("Groq", "https://console.groq.com/keys"), " \u00b7 ", link("OpenRouter", "https://openrouter.ai/keys"));
+    const sendKey = async (service) => {
+      const key = keyInput.value.trim();
+      if (!key) { keyInput.focus(); return; }
+      choose.hidden = true; say("Checking the key...");
+      try {
+        const d = await api("/api/ai", { action: "key", key, service: service || "" });
+        if (d.choose) {
+          choose.replaceChildren(el("span", "", "Which service is this key from? "));
+          d.choose.forEach((name) => choose.append(button((services[name] || {}).title || name, () => sendKey(name), "ghost small")));
+          choose.hidden = false; say(""); return;
+        }
+        keyInput.value = "";
+        showChecks(d.checks, `\u2714 ${d.title} connected.`);
+        render(d.overview); loadStatus();
+      } catch (e) { fail(e); }
+    };
+    keyForm.addEventListener("submit", (e) => { e.preventDefault(); sendKey(""); });
+
+    // subscriptions
+    const kiroRow = el("div", "sub-row"), codexRow = el("div", "sub-row");
+    const pollLogin = (name, rowFill) => {
+      clearInterval(timers[name]);
+      const started = Date.now();
+      timers[name] = setInterval(async () => {
+        if (Date.now() - started > 10 * 60 * 1000) { clearInterval(timers[name]); return; }
+        try {
+          const d = await api("/api/ai", { action: "login_status", provider: name });
+          logins[name] = { ...(logins[name] || {}), progress: d };
+          if (d.state === "done") {
+            clearInterval(timers[name]);
+            showChecks(d.checks, `\u2714 Signed in. ${name === "kiro" ? "Kiro" : "Your ChatGPT plan"} is now Karya's first AI.`);
+            refresh(); loadStatus();
+          } else if (d.state === "failed" || d.state === "idle") {
+            clearInterval(timers[name]);
+            say(`\u2716 Sign-in didn't finish${d.error ? ": " + d.error : ""}. Try again.`);
+          }
+          rowFill();
+        } catch (e) { clearInterval(timers[name]); fail(e); }
+      }, 2500);
+    };
+    const progressLine = (p) => {
+      const line = el("div", "hint");
+      if (!p || p.state !== "waiting") return line;
+      line.append("Finish signing in on the page that opened in your browser. ");
+      if (p.code) line.append("Check it shows this code: ", el("strong", "", p.code), ". ");
+      if (p.url) line.append(link("Open the sign-in page", p.url));
+      return line;
+    };
+    const fillKiro = () => {
+      const info = logins.kiro || {};
+      const on = (list.dataset.names || "").split(",").includes("kiro");
+      kiroRow.replaceChildren(el("span", "sub-name", "Kiro subscription"));
+      if (on) kiroRow.append(el("span", "ok", info.key ? "\u2714 connected with your Kiro key" : "\u2714 signed in"));
+      else if (info.installed === false) kiroRow.append(el("span", "", "First install the Kiro CLI: "), link("kiro.dev/downloads", "https://kiro.dev/downloads"));
+      else {
+        kiroRow.append(el("span", "", "Sign in with: "));
+        [["google", "Google"], ["github", "GitHub"], ["builder", "AWS Builder ID"]].forEach(([method, label]) =>
+          kiroRow.append(button(label, async () => {
+            say("Opening the Kiro sign-in page...");
+            try { logins.kiro = { ...info, progress: await api("/api/ai", { action: "login", provider: "kiro", method }) }; fillKiro(); pollLogin("kiro", fillKiro); say(""); }
+            catch (e) { fail(e); }
+          }, "small", `Sign in to Kiro with ${label}`)));
+      }
+      kiroRow.append(progressLine(info.progress));
+    };
+    const fillCodex = () => {
+      const info = logins.codex || {};
+      const on = (list.dataset.names || "").split(",").includes("codex");
+      codexRow.replaceChildren(el("span", "sub-name", "ChatGPT plan (Plus, Pro, Business) via Codex"));
+      if (on) codexRow.append(el("span", "ok", "\u2714 connected"));
+      else if (info.installed === false) {
+        const cmd = "npm install -g @openai/codex";
+        codexRow.append(el("span", "", "First install the Codex CLI (needs Node.js from nodejs.org): "), el("code", "", cmd), " ",
+          button("Copy", async (e) => { try { await navigator.clipboard.writeText(cmd); e.target.textContent = "Copied \u2714"; } catch (err) { e.target.textContent = "Select and copy"; } }, "ghost small", "Copy the install command"));
+      } else if (info.signed_in) {
+        codexRow.append(button("Use my ChatGPT plan", async () => {
+          say("Connecting your ChatGPT plan...");
+          try { const d = await api("/api/ai", { action: "use_codex" }); showChecks(d.checks, "\u2714 Your ChatGPT plan is now Karya's first AI."); render(d.overview); loadStatus(); }
+          catch (e) { fail(e); }
+        }, "small", "Use my ChatGPT plan"), el("span", "hint", " Codex is already signed in on this PC."));
+      } else {
+        const go = (device) => async () => {
+          say("Opening the ChatGPT sign-in page...");
+          try { logins.codex = { ...info, progress: await api("/api/ai", { action: "login", provider: "codex", method: device ? "device" : "" }) }; fillCodex(); pollLogin("codex", fillCodex); say(""); }
+          catch (e) { fail(e); }
+        };
+        codexRow.append(button("Sign in with ChatGPT", go(false), "small", "Sign in with ChatGPT"), " ",
+          button("use a code instead", go(true), "ghost small", "Sign in to ChatGPT with a code"));
+      }
+      codexRow.append(progressLine(info.progress));
+    };
+
+    // the AIs Karya uses, in order, each with its model
+    const render = (ov) => {
+      (ov.services || []).forEach((s) => { services[s.name] = s; });
+      if (ov.kiro) logins.kiro = ov.kiro;
+      if (ov.codex) logins.codex = ov.codex;
+      const rows = ov.connected || [];
+      list.dataset.names = rows.map((r) => r.name).join(",");
+      list.replaceChildren();
+      if (!rows.some((r) => r.name !== "ollama")) list.appendChild(el("p", "missing", "\u26A0 No AI connected yet. Paste a key below or sign in with a subscription."));
+      rows.forEach((r, i) => {
+        const row = el("div", "ai-row");
+        row.append(el("span", "ai-name", `${i + 1}. ${r.title}`),
+          el("span", "ai-how", r.how === "sign-in" ? "signed in" : r.how === "offline" ? "offline (slow)" : r.how));
+        const pick = el("select"); pick.setAttribute("aria-label", `Model for ${r.title}`);
+        const add = (id, label) => { const o = el("option", "", label || id); o.value = id; pick.appendChild(o); return o; };
+        add(r.model, r.model);
+        pick.value = r.model;
+        api("/api/ai", { action: "models", provider: r.name }).then((d) => {
+          (d.models || []).forEach((m) => { if (m.id !== r.model) add(m.id, m.description ? `${m.name} \u2014 ${m.description}` : m.name); });
+          add("__other", "Another model (type its name)...");
+        }).catch(() => add("__other", "Another model (type its name)..."));
+        pick.addEventListener("change", async () => {
+          let model = pick.value;
+          if (model === "__other") { model = (prompt(`Model name for ${r.title}:`) || "").trim(); if (!model) { pick.value = r.model; return; } }
+          say(`Switching ${r.title} to ${model}...`);
+          try { const d = await api("/api/ai", { action: "model", provider: r.name, model }); showChecks(d.checks, `\u2714 ${r.title} now uses ${model}.`); render(d.overview); loadStatus(); }
+          catch (e) { fail(e); pick.value = r.model; }
+        });
+        row.appendChild(pick);
+        if (i > 0) row.appendChild(button("Use first", async () => {
+          try { const d = await api("/api/ai", { action: "first", provider: r.name }); render(d.overview); loadStatus(); say(`\u2714 ${r.title} goes first now.`); } catch (e) { fail(e); }
+        }, "ghost small", `Use ${r.title} first`));
+        if (r.name !== "ollama") row.appendChild(button("Remove", async () => {
+          if (!confirm(`Remove ${r.title} from Karya?`)) return;
+          try { const d = await api("/api/ai", { action: "remove", provider: r.name }); render(d.overview); loadStatus(); say(`Removed ${r.title}.`); } catch (e) { fail(e); }
+        }, "ghost small", `Remove ${r.title}`));
+        list.appendChild(row);
+      });
+      fillKiro(); fillCodex();
+    };
+    const refresh = () => api("/api/ai").then(render).catch(fail);
+
+    box.append(el("h3", "", "Connect your AI"),
+      el("p", "hint", "Karya needs an AI to think with. Paste any key you have, or sign in with a subscription you already pay for. Then pick the model. Karya uses them in this order and moves to the next one if one is busy."),
+      list, keyForm, choose, free, el("h4", "", "Or use a subscription you already have"), kiroRow, codexRow, msg);
+    refresh();
+    return box;
+  }
+
+  // ---------- Your phone: tasks from WhatsApp ----------
+  function phoneBox() {
+    const box = el("section", "phone-box"); box.setAttribute("aria-label", "Give Karya tasks from WhatsApp");
+    const state = el("p", "phone-state");
+    const num = el("input"); num.type = "tel"; num.autocomplete = "tel";
+    num.placeholder = "Your WhatsApp number with country code (only if Karya doesn't know it)";
+    num.setAttribute("aria-label", "Your WhatsApp number with country code");
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    const go = button("Connect WhatsApp", async () => {
+      go.disabled = true; msg.textContent = "Opening WhatsApp Web in its own window...";
+      try { box.update(await api("/api/phone", { action: "connect", number: num.value.trim() })); msg.textContent = ""; loadStatus(); }
+      catch (e) { msg.textContent = "\u2716 " + e.message; }
+      go.disabled = false;
+    }, "", "Connect WhatsApp");
+    const off = button("Disconnect", async () => {
+      try { box.update(await api("/api/phone", { action: "disconnect" })); loadStatus(); } catch (e) { msg.textContent = "\u2716 " + e.message; }
+    }, "ghost small", "Disconnect WhatsApp");
+    const row = el("div", "phone-row"); row.append(num, go, off);
+    box.update = (wa) => {
+      const st = wa.state || "off";
+      const text = {
+        off: "Not linked yet.",
+        starting: "Opening WhatsApp Web...",
+        opening: "Opening your \"Message yourself\" chat...",
+        needs_qr: "Scan the code in the WhatsApp window: on your phone open WhatsApp > Settings > Linked devices > Link a device.",
+        ready: "\u2714 Linked. Message yourself on WhatsApp to give Karya a task. STATUS, STOP and HELP work too.",
+        error: "\u2716 " + (wa.detail || "WhatsApp didn't start."),
+      }[st] || wa.detail || st;
+      state.textContent = text; state.className = "phone-state " + (st === "ready" ? "ok" : st === "error" ? "missing" : "");
+      num.hidden = !(st === "off" || st === "error"); go.hidden = !(st === "off" || st === "error"); off.hidden = st === "off";
+    };
+    box.append(el("h3", "", "Give Karya tasks from your phone (WhatsApp)"),
+      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat): Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that one chat is read. Logins and passwords never go over WhatsApp. It works while Karya runs on this PC; its WhatsApp window must stay open (it can sit behind other windows)."),
+      state, row, msg);
+    box.update({ state: "off" });
+    return box;
+  }
+
+  // ---------- Background agents ----------
+  function agentsBox() {
+    const box = el("section", "agents-box"); box.setAttribute("aria-label", "Background agents");
+    const list = el("ul", "agent-list");
+    box.update = (agents) => {
+      list.replaceChildren();
+      if (!agents.length) { list.appendChild(el("li", "hint", "No agents yet.")); return; }
+      agents.forEach((a) => {
+        const li = el("li");
+        const act = (action, label) => button(label, async () => {
+          if (action === "delete" && !confirm(`Delete the agent "${a.name}"?`)) return;
+          try { box.update((await api("/api/agents", { action, agent: a.id })).agents || []); } catch (e) { alert(e.message); }
+        }, "ghost small", `${label}: ${a.name}`);
+        const actions = el("div", "agent-actions");
+        actions.append(act("run", "Run now"), act(a.enabled ? "pause" : "resume", a.enabled ? "Pause" : "Resume"), act("delete", "Delete"));
+        li.append(el("div", "agent-title", `${a.name} \u00b7 ${a.when}${a.enabled ? "" : " (paused)"}`), el("div", "hint", a.task),
+          el("div", "hint", (a.enabled ? `Next run: ${a.next_run}` : "Paused") + (a.last_report ? ` \u00b7 Last report: ${a.last_report}` : "")), actions);
+        list.appendChild(li);
+      });
+    };
+    box.append(el("h3", "", "Background agents"),
+      el("p", "hint", "Tasks Karya does by itself on a schedule (while it's running) and reports on, here and on WhatsApp. Make one by asking Karya, for example: \"every morning at 9 find new PM jobs in Hyderabad and apply to the best 3\" or \"check gold sentiment twice a day and tell me\"."),
+      list);
+    box.update([]);
+    return box;
+  }
+
   function settingsForm() {
     const box = document.createElement("form");
     box.className = "settings";
@@ -290,6 +542,9 @@
     const intro = document.createElement("p"); intro.className = "hint";
     intro.textContent = "Add any AI key you have, free or paid. Karya checks each key, learns its limits and adapts: small free plans get small requests, big paid plans run at full speed.";
     const provBox = document.createElement("div"); provBox.className = "providers";
+    const provFold = document.createElement("details"); provFold.className = "advanced";
+    const provSum = document.createElement("summary"); provSum.textContent = "Every AI service, one by one (advanced: keys, models, order)";
+    provFold.append(provSum, provBox);
     const otherBox = document.createElement("div");
     const inputs = {};
     const secrets = new Set();
@@ -381,7 +636,8 @@
     }).catch(() => {});
     const save = document.createElement("button"); save.type = "submit"; save.textContent = "Save & check keys";
     const msg = document.createElement("div"); msg.className = "form-msg"; msg.setAttribute("role", "status");
-    box.append(h, intro, provBox, otherBox, save, msg);
+    intro.textContent = "Email, resume, browser and safety settings. (To add an AI, use Connect your AI above.)";
+    box.append(h, intro, provFold, otherBox, save, msg);
     box.addEventListener("submit", async (e) => {
       e.preventDefault();
       const body = {};
@@ -408,8 +664,35 @@
     intro.textContent = "Claude Desktop, Cursor, Kiro, VS Code, Windsurf, OpenClaw, Claude Code, Codex, Gemini CLI and other MCP apps " +
       "can use Karya's browser, email, job and posting tools with their own AI. Karya still runs every check and asks you " +
       "before sending, posting, submitting or paying. The Chrome extension is optional: without it Karya uses its own Chrome window.";
-    const body = document.createElement("div");
-    box.append(h, intro, body);
+    const body = document.createElement("details"); body.className = "advanced";
+    const bodySum = document.createElement("summary"); bodySum.textContent = "Add it by hand (other apps, or if a button doesn't work)";
+    body.appendChild(bodySum);
+    const appsList = document.createElement("ul"); appsList.className = "mcp-apps";
+    const appsMsg = document.createElement("div"); appsMsg.className = "form-msg"; appsMsg.setAttribute("role", "status");
+    box.append(h, intro, appsList, appsMsg, body);
+    const loadApps = async () => {
+      try {
+        const d = await api("/api/mcp/apps");
+        appsList.replaceChildren();
+        (d.apps || []).filter((a) => a.installed || a.state !== "no").forEach((a) => {
+          const li = el("li");
+          const said = { connected: "\u2714 Karya added", other: "has Karya from another folder", no: "not added yet",
+            unreadable: "its config file has comments or errors, so Karya won't touch it: add it by hand below" }[a.state] || a.state;
+          li.append(el("span", "", `${a.name}: `), el("span", a.state === "connected" ? "ok" : "", said));
+          if (a.state === "no" || a.state === "other") {
+            li.append(" ", button(a.state === "other" ? "Use this Karya" : "Add Karya", async (e) => {
+              e.target.disabled = true; appsMsg.textContent = `Adding Karya to ${a.name}...`;
+              try { const r = await api("/api/mcp/apps", { app: a.id }); appsMsg.textContent = `\u2714 Added to ${a.name}. ${r.next || ""}`; }
+              catch (err) { appsMsg.textContent = "\u2716 " + err.message; }
+              loadApps();
+            }, "small", `Add Karya to ${a.name}`));
+          }
+          appsList.appendChild(li);
+        });
+        if (!appsList.children.length) appsList.appendChild(el("li", "hint", "No AI apps found on this PC. Use the steps below for others."));
+      } catch (e) { appsList.replaceChildren(el("li", "missing", "Couldn't check your AI apps: " + e.message)); }
+    };
+    loadApps();
     const block = (title, text) => {
       const wrap = document.createElement("div"); wrap.className = "mcp-snippet";
       const t = document.createElement("div"); t.className = "mcp-title"; t.textContent = title;

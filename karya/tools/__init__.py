@@ -4,3 +4,4 @@ from . import job_sources, funding  # noqa: F401,E402 - after jobs (they use its
 from . import autofill  # noqa: F401,E402 - uses browser and jobs
 from . import market_talk  # noqa: F401,E402 - uses web and finance
 from . import work_history  # noqa: F401,E402 - uses resume and job_sources
+from .. import phone, scheduler  # noqa: F401,E402 - background agents and tasks from WhatsApp

@@ -34,6 +34,18 @@ def test_setup_panel_and_login_card(tmp_path, monkeypatch):
          "tokens_per_minute": 8000, "summary": "free/small plan: Karya keeps each request small"} for n in sorted(names)])
     for key in config.EDITABLE_KEYS:
         monkeypatch.setenv(key, "")
+    monkeypatch.setattr(config.settings, "providers", [])      # not the developer's real AIs
+    # Sign-in states and app configs are faked: the test never runs the real Kiro/Codex CLIs or reads your apps
+    from karya import codex_bridge, connect, kiro_bridge, mcp_apps
+    monkeypatch.setattr(kiro_bridge, "login_status", lambda: {"installed": True, "signed_in": False})
+    monkeypatch.setattr(codex_bridge, "login_status", lambda fresh=False: {"installed": False, "signed_in": False})
+    monkeypatch.setattr(connect, "models_for", lambda name, fresh=False: [{"id": "m2", "name": "m2", "description": ""}])
+    added = []
+    monkeypatch.setattr(mcp_apps, "overview", lambda root=None: [
+        {"id": "cursor", "name": "Cursor", "installed": True, "file": "x", "state": "connected" if added else "no"},
+        {"id": "windsurf", "name": "Windsurf", "installed": False, "file": "y", "state": "no"}])
+    monkeypatch.setattr(mcp_apps, "connect", lambda app_id, root=None: added.append(app_id) or {
+        "id": app_id, "name": "Cursor", "state": "connected", "next": "Restart Cursor so it loads Karya's tools."})
     port = _free_port()
     llm = FakeLLM([tool_call("request_credentials", {"site": "linkedin.com", "reason": "to use Easy Apply"}),
                    reply("Logged in and ready.")])
@@ -70,6 +82,34 @@ def test_setup_panel_and_login_card(tmp_path, monkeypatch):
             page.wait_for_selector("#setup-panel .settings .field", timeout=10000, state="attached")
             if page.is_hidden("#setup-panel"):
                 page.click("#setup-btn")
+
+            # Connect your AI: paste any key; Karya works out the service, saves it and checks it
+            page.wait_for_selector(".connect-box h3:has-text('Connect your AI')", timeout=10000)
+            page.wait_for_selector(".connect-box button:has-text('Google')", timeout=10000)       # Kiro sign-in
+            assert "npm install -g @openai/codex" in page.inner_text(".connect-box")           # Codex not installed
+            page.fill("[aria-label='Paste an AI key']", "gsk_" + "p" * 40)
+            page.click(".connect-box .key-form button")
+            page.wait_for_selector(".connect-box .form-msg:has-text('Groq connected')", timeout=10000)
+            assert "GROQ_API_KEY=gsk_" + "p" * 40 in env.read_text(encoding="utf-8")
+            assert page.input_value("[aria-label='Paste an AI key']") == ""
+            page.fill("[aria-label='Paste an AI key']", "sk-" + "0a" * 16)                    # DeepSeek or OpenAI?
+            page.click(".connect-box .key-form button")
+            page.wait_for_selector(".choose-service button:has-text('DeepSeek')", timeout=10000)
+            page.click(".choose-service button:has-text('DeepSeek')")
+            page.wait_for_selector(".connect-box .form-msg:has-text('DeepSeek connected')", timeout=10000)
+
+            # phone and background agents
+            assert "Not linked yet." in page.inner_text(".phone-box .phone-state")
+            assert "No agents yet." in page.inner_text(".agents-box")
+
+            # one click adds Karya to an installed AI app
+            page.wait_for_selector(".mcp-apps li:has-text('Cursor') button", timeout=10000)
+            assert page.locator(".mcp-apps li", has_text="Windsurf").count() == 0             # not installed
+            page.click(".mcp-apps li:has-text('Cursor') button")
+            page.wait_for_selector(".mcp-box .form-msg:has-text('Restart Cursor')", timeout=10000)
+            page.wait_for_selector(".mcp-apps li:has-text('Karya added')", timeout=10000)
+
+            page.click("summary:has-text('Every AI service, one by one')")                    # the advanced list
             page.wait_for_selector("[aria-label='Groq API key']", timeout=10000)
             assert page.locator("#setup-panel .providers .field").count() >= 12   # every provider + custom + order
             for name in ("OpenAI", "Anthropic Claude", "Google Gemini", "Groq"):

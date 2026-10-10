@@ -90,9 +90,9 @@ def task_status():
 
 
 @tool("enable_tools", "Load more tool groups when you need a capability you don't see: "
-      "finance, jobs, email, browser, pc, files, website, memory.", {
+      "finance, jobs, email, browser, pc, files, website, memory, agents.", {
     "groups": P("array", "Groups to load", items={"type": "string",
-                                                  "enum": ["finance", "jobs", "email", "browser", "pc", "files", "website", "memory", "resume", "accounts"]}),
+                                                  "enum": ["finance", "jobs", "email", "browser", "pc", "files", "website", "memory", "resume", "accounts", "agents", "web"]}),
 }, required=["groups"], group="core")
 def enable_tools(groups: list[str]):
     return f"Loaded tool groups: {', '.join(groups)}. They are available from your next step."

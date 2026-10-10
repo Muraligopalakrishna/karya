@@ -103,6 +103,34 @@ PRESETS: tuple[Preset, ...] = (
            signup="https://console.groq.com/keys", free=True),
 )
 PRESET_BY_NAME = {p.name: p for p in PRESETS}
+CODEX_TITLE = "ChatGPT plan (via Codex CLI)"
+
+# What a pasted key looks like -> which service it's from. Ambiguous shapes list several (the user picks).
+KEY_SHAPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (r"^ksk_", ("kiro",)),
+    (r"^sk-ant-", ("anthropic",)),
+    (r"^sk-or-", ("openrouter",)),
+    (r"^gsk_", ("groq",)),
+    (r"^AIza[0-9A-Za-z_\-]{20,}$", ("gemini",)),
+    (r"^xai-", ("xai",)),
+    (r"^csk-", ("cerebras",)),
+    (r"^tgp_", ("together",)),
+    (r"^sk-(proj|svcacct|admin)-", ("openai",)),
+    (r"^sk-[0-9a-f]{32}$", ("deepseek", "openai")),
+    (r"^sk-", ("openai", "deepseek")),
+    (r"^[0-9a-f]{64}$", ("together",)),
+    (r"^[A-Za-z0-9]{32}$", ("mistral",)),
+)
+
+
+def detect_key(key: str) -> list[str]:
+    """The services a pasted key can be from, most likely first ([] = unknown shape: ask the user)."""
+    import re as _re
+    key = (key or "").strip()
+    for pattern, names in KEY_SHAPES:
+        if _re.search(pattern, key):
+            return list(names)
+    return []
 
 
 class Settings:
@@ -133,6 +161,8 @@ class Settings:
         # AI apps (Claude, Cursor, Kiro, VS Code...) using Karya's tools over MCP
         self.mcp_enabled = _bool("KARYA_MCP_ENABLED", True)
         self.mcp_tools = _env("KARYA_MCP_TOOLS", "")
+        # Tasks from the user's phone: their WhatsApp "Message yourself" chat (see karya/whatsapp.py)
+        self.whatsapp_enabled = _bool("WHATSAPP_ENABLED", False)
         # Daily limits that protect the user's accounts from being flagged as spam (any AI, any mode)
         self.max_emails_per_day = _int("KARYA_MAX_EMAILS_PER_DAY", 40)
         self.max_posts_per_day = _int("KARYA_MAX_POSTS_PER_DAY", 10)
@@ -162,6 +192,8 @@ class Settings:
             key = _env(preset.key_env)
             if preset.name == "kiro" and not key and _env("CUSTOM_API_KEY").startswith("ksk_"):
                 key = _env("CUSTOM_API_KEY")  # Kiro keys pasted into the custom fields still work
+            if preset.name == "kiro" and not key and _bool("KIRO_LOGIN", False):
+                key = "login"                 # signed in to Kiro in Setup (no key): the Kiro CLI uses that login
             if not key:
                 continue
             model = _env(f"{preset.name.upper()}_MODEL", preset.model)
@@ -171,6 +203,11 @@ class Settings:
                 max_input_tokens=preset.start_tokens, label_name=preset.title,
                 model_reasoning={"qwen/qwen3.8-27b": "none"} if preset.name == "groq" else {},
                 **({"context_chars": 160_000, "timeout": 240.0} if preset.name == "kiro" else {}))
+        if _bool("CODEX_ENABLED", False):    # a ChatGPT plan, signed in through the Codex CLI
+            known["codex"] = Provider("codex", "codex-cli://exec", "login", _env("CODEX_MODEL", "gpt-5.4-mini"),
+                                      reasoning_effort=_env("CODEX_REASONING", "low"), context_chars=200_000,
+                                      timeout=240.0, fallback_models=("gpt-5.4",), max_input_tokens=50_000,
+                                      label_name=CODEX_TITLE)
         if _bool("OLLAMA_ENABLED", True):
             known["ollama"] = Provider(
                 "ollama", _env("OLLAMA_BASE_URL", "http://localhost:11434/v1"), "ollama",
@@ -178,8 +215,8 @@ class Settings:
                 context_chars=26_000, timeout=600.0, fallback_models=("qwen3.5:4b",),
                 compact_tools=True, slow=True, label_name="Ollama (offline)")
         order = [p.strip().lower() for p in _env("LLM_PROVIDERS").split(",") if p.strip()]
-        if not order:  # default: the user's own gateway first, then paid-quality APIs, then free tiers, offline last
-            order = ["custom", *[p.name for p in PRESETS], "ollama"]
+        if not order:  # default: the user's own gateway first, then subscriptions and paid APIs, free tiers, offline last
+            order = ["custom", "kiro", "codex", *[p.name for p in PRESETS if p.name != "kiro"], "ollama"]
         return [known[n] for n in order if n in known]
 
     @property
@@ -210,8 +247,17 @@ EDITABLE_KEYS = tuple([k for p in PRESETS for k in (p.key_env, f"{p.name.upper()
                         "APPROVAL_MODE", "AUTO_SUBMIT_PICKED", "KEEP_GOING", "KEEP_GOING_MINUTES",
                         "KARYA_MCP_ENABLED", "KARYA_MCP_TOOLS", "KARYA_MAX_EMAILS_PER_DAY", "KARYA_MAX_POSTS_PER_DAY",
                         "KARYA_MAX_APPLICATIONS_PER_DAY", "KARYA_FULL_ACCESS", "KARYA_FULL_ACCESS_PAYMENTS",
-                        "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN"])
+                        "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED",
+                        "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL"])
 SECRET_KEYS = {p.key_env for p in PRESETS} | {"CUSTOM_API_KEY", "EMAIL_APP_PASSWORD", "VERCEL_TOKEN"}
+
+
+def provider_order(first: str | None = None, add: str | None = None, drop: str | None = None) -> str:
+    """The LLM_PROVIDERS value after a change: `first` moves to the front, `add` joins (so a newly connected AI is
+    never left out of a custom order), `drop` leaves."""
+    current = [p.name for p in settings.providers]
+    names = list(dict.fromkeys(([first] if first else []) + current + ([add] if add else [])))
+    return ",".join(n for n in names if n and n != drop)
 
 
 def provider_catalog() -> list[dict]:
