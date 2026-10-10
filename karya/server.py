@@ -138,6 +138,9 @@ class Hub:
                 self.bots.pop(record["id"], None)
                 from . import desk
                 desk.DESK.release(run.id)
+                if scheduler.find(record["id"]) is None:     # deleted while it worked: nothing of it stays
+                    self.bot_agents.pop(record["id"], None)
+                    scheduler.forget_files(record["id"])
                 await self.send({"type": "bot_done", "run": run.id, "bot": run.bot, "agent_id": record["id"],
                                  "task": task_now[:300], "report": report, "ok": ok})
                 await self._tell("on_bot_done", record, task_now, report, item["source"])
@@ -731,6 +734,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                                  "answers": {str(k)[:200]: str(v)[:500] for k, v in list(raw_answers.items())[:20]}}
                         if isinstance(data.get("auto_submit"), bool):
                             reply["auto_submit"] = data["auto_submit"]
+                        if data.get("code"):
+                            reply["code"] = str(data.get("code", ""))[:20]
                     hub.answer_ask(str(data.get("id")), reply)
                 elif kind == "stop":
                     hub.agent.cancel()

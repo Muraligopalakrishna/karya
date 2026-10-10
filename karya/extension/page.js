@@ -190,6 +190,10 @@
         else if (el.files && el.files.length) it.value = clean(el.files[0].name).slice(0, 80);
         if (el.placeholder) it.placeholder = clean(el.placeholder).slice(0, 60);
         if (el.name) it.name = el.name.slice(0, 40);
+        if (el.maxLength > 0 && el.maxLength <= 12) it.maxlength = el.maxLength;
+        if (/one-time-code/i.test(el.getAttribute("autocomplete") || "") ||
+            /\b(otp|one[- ]?time|verification code|security code|confirmation code|login code|passcode|enter (the )?code)\b/i
+              .test([it.label, el.placeholder, el.name, el.id].join(" "))) it.code = true;
         if (el.required || el.getAttribute("aria-required") === "true") it.required = true;
         if (it.type === "file") {   // Greenhouse labels both uploads "Attach": id="resume" / id="cover_letter" tell them apart
           if (el.id) it.key = el.id.slice(0, 40);
@@ -872,9 +876,111 @@
     return { url: location.href, title: document.title, text: body.slice(0, a.max || 60000), links, posts };
   };
 
+  // ---------------------------------------------------------------- pop-ups
+  // Nags that are never part of a task (the user, 2026-10-11: "Are you still looking for a job?" sat on the page).
+  const NAG = /still looking for (a )?(new )?(job|work|role|opportunit)|actively looking|are you (still )?open to (work|new)|save (your )?log ?in info|remember (this|your) (device|login)\?|turn on (push |desktop )?notifications|allow notifications|enable notifications|get (the|our) app|download (the|our) app|open in (the )?app|use the app|continue in (the )?app|install (the|our) app|subscribe to (our )?newsletter|sign up for (our )?newsletter|rate (us|your experience)|how (likely|was your)|take (a|our) (short |quick )?survey|share your feedback|complete your profile|update your profile|add (a|your) (profile )?(photo|picture)|enable location|use your location|we use cookies|uses cookies|cookie (settings|preferences|policy|consent|notice)|accept (all )?cookies|personali[sz]ed ads|choose your cookie/i;
+  const DISMISS = /^(x|×|✕|✖|close|close dialog|dismiss|not now|no,? thanks|no thank you|maybe later|later|ask me later|remind me later|skip|skip for now|cancel|got it|ok,? got it|okay|i'?ll do (it|this) later|not interested|no|continue without|reject( all)?|decline|necessary only|only necessary|essential only|use necessary cookies only|accept( all)?( cookies)?|allow( all)?( cookies)?|i agree|agree|ok)$/i;
+  const DISMISS_RANK = (t) => { const l = t.toLowerCase();
+    if (/^(x|×|✕|✖|close|close dialog|dismiss)$/.test(l)) return 1;
+    if (/not now|no,? thanks|no thank you|maybe later|later|skip|not interested|continue without|cancel|^no$/.test(l)) return 2;
+    if (/reject|decline|necessary|essential/.test(l)) return 3;
+    if (/got it|okay|^ok$/.test(l)) return 4;
+    return 5; };   // accept / agree: cookie banners that only offer that
+  function popupBoxes() {
+    const vh = window.innerHeight || 800, vw = window.innerWidth || 1200;
+    const found = [];
+    for (const box of deepAll('[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open], [class*="modal" i], [class*="popup" i], [class*="overlay" i], [class*="dialog" i], [id*="cookie" i], [class*="cookie" i], [class*="consent" i], [class*="banner" i]')) {
+      if (!shown(box) || found.some((f) => f.contains(box))) continue;
+      const style = getComputedStyle(box), r = box.getBoundingClientRect();
+      const floating = ["fixed", "sticky"].includes(style.position) || box.matches('[role=dialog],[role=alertdialog],[aria-modal=true],dialog[open]');
+      if (!floating || r.width < 120 || r.height < 30 || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
+      if (clean(box.innerText).length < 6) continue;
+      for (let i = found.length - 1; i >= 0; i--) if (box.contains(found[i])) found.splice(i, 1);
+      found.push(box);
+    }
+    return found;
+  }
+  function dismissOf(box) {
+    const btns = [...box.querySelectorAll('button, [role=button], a[role=button], [aria-label], input[type=button], input[type=submit]')]
+      .filter((b) => shown(b));
+    let best = null, rank = 99;
+    for (const b of btns) {
+      const t = clean(b.getAttribute("aria-label") || b.innerText || b.value || b.getAttribute("title") || "");
+      if (!t || t.length > 40 || !DISMISS.test(t)) continue;
+      const k = DISMISS_RANK(t);
+      if (k < rank) { best = b; rank = k; }
+    }
+    return best;
+  }
+  K.popups = () => popupBoxes().map((box) => {
+    const close = dismissOf(box);
+    return { text: clean(box.innerText).slice(0, 160), nag: NAG.test(clean(box.innerText).slice(0, 600)),
+             close: close ? clean(close.getAttribute("aria-label") || close.innerText || close.value || "").slice(0, 30) : "",
+             closeId: close ? Number(close.getAttribute("data-jid")) || null : null };
+  });
+  // Close only the nags (never a dialog that could be part of the task, like Easy Apply or a post composer).
+  K.closePopups = () => {
+    const closed = [];
+    for (const box of popupBoxes()) {
+      const text = clean(box.innerText);
+      if (!NAG.test(text.slice(0, 600))) continue;
+      if (box.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=true]') &&
+          !/cookie|consent/i.test(text.slice(0, 300))) continue;    // it asks for typing: leave it to the agent
+      const btn = dismissOf(box);
+      if (!btn) continue;
+      btn.click();
+      closed.push({ text: text.slice(0, 90), button: clean(btn.getAttribute("aria-label") || btn.innerText || btn.value || "") });
+    }
+    return { closed };
+  };
+
+  // ---------------------------------------------------------------- Gmail search results (for login codes)
+  K.gmailRows = () => {
+    if (/accounts\.google\.com/.test(location.host) || /ServiceLogin|signin/i.test(location.href)) return { signed_out: true, rows: [] };
+    const rows = [];
+    for (const tr of document.querySelectorAll(GMAIL_ROWS)) {
+      const who = tr.querySelector('[email]');
+      const subj = tr.querySelector('.bog, .bqe, [data-thread-id] span, .y6 span');
+      const snip = tr.querySelector('.y2');
+      const when = tr.querySelector('td.xW span[title], .xW span[title], span[title][aria-label]');
+      rows.push({ email: who ? who.getAttribute("email") || "" : "", name: who ? clean(who.innerText) : "",
+                  subject: subj ? clean(subj.innerText) : "", snippet: snip ? clean(snip.innerText).replace(/^[-\s]+/, "") : "",
+                  when: when ? when.getAttribute("title") || "" : "" });
+      if (rows.length >= 15) break;
+    }
+    return { rows };
+  };
+
+  const GMAIL_ROWS = 'tr.zA, [role=main] tr[jscontroller]';
+  // Open one of the search results (the code is often only inside the email, not in its subject).
+  K.gmailOpen = (a) => {
+    const row = document.querySelectorAll(GMAIL_ROWS)[Number((a || {}).index) || 0];
+    if (!row) return { ok: false };
+    const target = row.querySelector('.bog, .y6, td.xY, [role=link]') || row;
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    return { ok: true };
+  };
+  // The open email: its sender, time and text (the newest message of the conversation).
+  K.gmailMessage = () => {
+    const bodies = [...document.querySelectorAll('.a3s')].filter((b) => clean(b.innerText));
+    if (!bodies.length) return {};
+    const senders = [...document.querySelectorAll('.gD[email]')];
+    const times = [...document.querySelectorAll('.g3[title]')];
+    return { text: (bodies[bodies.length - 1].innerText || "").slice(0, 6000),
+             email: senders.length ? senders[senders.length - 1].getAttribute("email") : "",
+             when: times.length ? times[times.length - 1].getAttribute("title") : "" };
+  };
+
   K.act = async (op, a) => {
     a = a || {};
+    if (op === "gmailopen") return K.gmailOpen(a);
+    if (op === "gmailmessage") return K.gmailMessage(a);
     if (op === "posts") return K.socialPosts(a);
+    if (op === "popups") return K.popups(a);
+    if (op === "closepopups") return K.closePopups(a);
+    if (op === "gmailrows") return K.gmailRows(a);
     if (op === "readpage") return K.readPage(a);
     if (op === "openoptions") return await K.openOptions(a);
     if (op === "formcheck") return K.formCheck(a);

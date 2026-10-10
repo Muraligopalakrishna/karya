@@ -308,11 +308,35 @@ def _fmt(it: dict) -> str:
         line += " (marked invalid)"
     if it.get("required"):
         line += " *required"
+    if it.get("code"):
+        line += " (login code box: use enter_login_code)"
     return line
 
 
+def popup_lines(popups) -> list[str]:
+    """Open pop-ups that aren't nags (those Karya closes itself): say what they are and how to close them."""
+    lines = []
+    for p in popups or []:
+        if not isinstance(p, dict) or p.get("nag"):
+            continue
+        how = f" To close it: browser_click [{p['closeId']}] (\"{p.get('close')}\")." if p.get("closeId") else ""
+        lines.append(f"Pop-up open: \"{str(p.get('text') or '')[:140]}\". If it isn't part of your task, close it.{how}")
+    return lines[:2]
+
+
+def code_boxes(items: dict, element_id: int) -> list[int]:
+    """A code split into one box per character (maxlength 1, side by side): all the boxes, left to right."""
+    first = items.get(int(element_id)) or {}
+    if first.get("maxlength") != 1 or first.get("tag") != "input":
+        return [int(element_id)]
+    row = [it for it in items.values() if it.get("tag") == "input" and it.get("maxlength") == 1
+           and abs((it.get("y") or 0) - (first.get("y") or 0)) <= 25 and it.get("frame", 0) == first.get("frame", 0)]
+    row.sort(key=lambda it: it.get("x") or 0)
+    return [it["id"] for it in row] if len(row) >= 3 else [int(element_id)]
+
+
 def format_snapshot(url: str, title: str, items: list[dict], events: list[str], text: str, max_items: int,
-                    text_chars: int, filter_text: str | None = None, where: str = "") -> str:
+                    text_chars: int, filter_text: str | None = None, where: str = "", popups=None) -> str:
     shown = items
     if filter_text:
         words = [w.strip().lower() for w in re.split(r"[,|]", filter_text) if w.strip()]
@@ -323,6 +347,7 @@ def format_snapshot(url: str, title: str, items: list[dict], events: list[str], 
         lines.append(where)
     if events:
         lines.append("Events: " + " | ".join(events[-5:]))
+    lines.extend(popup_lines(popups))
     lines.append(f"Interactive elements ({len(shown)} of {len(items)}; use the [id] numbers):")
     lines.extend(_fmt(it) for it in shown[:max_items])
     if len(shown) > max_items:
@@ -598,6 +623,14 @@ class BrowserSession(_Common):
             page.wait_for_load_state("domcontentloaded", timeout=8000)
         except Exception:
             pass
+        try:   # nags ("Are you still looking for a job?", "Turn on notifications") are closed before Karya looks
+            closed = (page.main_frame.evaluate(PAGE_CALL_JS, {"fn": "closePopups", "args": {}}) or {}).get("closed") or []
+            for c in closed:
+                self.events.append(f"Closed a pop-up: \"{c.get('text', '')[:80]}\" ({c.get('button', '')})")
+            if closed:
+                page.wait_for_timeout(500)
+        except Exception:  # noqa: BLE001 - never blocks a snapshot
+            pass
         items, frames = [], {}
         reset = self.fresh
         for index, frame in enumerate(page.frames[:10]):
@@ -630,8 +663,12 @@ class BrowserSession(_Common):
             text = page.main_frame.evaluate("() => document.body ? document.body.innerText : ''")
         except Exception:
             text = ""
+        try:
+            popups = page.main_frame.evaluate(PAGE_CALL_JS, {"fn": "popups", "args": {}}) or []
+        except Exception:  # noqa: BLE001
+            popups = []
         events, self.events = self.events[-5:], []
-        return format_snapshot(page.url, self.title, items, events, text, max_items, text_chars, filter_text)
+        return format_snapshot(page.url, self.title, items, events, text, max_items, text_chars, filter_text, popups=popups)
 
     def _pause(self, seconds: float) -> None:
         self.page.wait_for_timeout(seconds * 1000)
@@ -681,9 +718,10 @@ class BrowserSession(_Common):
             return page.get_by_text(text, exact=False).first, None
         raise ValueError("Give element_id (from browser_snapshot) or text.")
 
-    def crawl_read(self, url: str, scrolls: int = 1) -> dict:
+    def crawl_read(self, url: str, scrolls: int = 1, reader: str = "") -> dict:
         """One page for crawl_site, in a tab of its own that stays open for the whole crawl (crawl_close closes it),
-        so the user's tab is never touched. Only navigates and reads; never clicks anything."""
+        so the user's tab is never touched. Only navigates and reads; never clicks anything. reader: a page.js
+        reader to run instead (e.g. gmailRows), retried for a few seconds until it finds something."""
         self._ensure()
         page = self._crawl_page
         if page is None or page.is_closed():
@@ -702,6 +740,14 @@ class BrowserSession(_Common):
             page.wait_for_load_state("networkidle", timeout=4000)
         except Exception:  # noqa: BLE001 - busy pages never go idle
             pass
+        if reader:
+            got = {}
+            for _ in range(8):
+                got = page.evaluate(PAGE_CALL_JS, {"fn": reader, "args": {}}) or {}
+                if got.get("rows") or got.get("signed_out"):
+                    break
+                page.wait_for_timeout(1200)
+            return got
         posts, seen, dry = [], set(), 0
         for n in range(max(0, int(scrolls)) + 1):
             if scrolls:
@@ -715,6 +761,17 @@ class BrowserSession(_Common):
         _add_posts(posts, seen, got.get("posts"))
         got["posts"], got["status"] = posts, status
         return got
+
+    def crawl_act(self, reader: str, args: dict | None = None) -> dict:
+        """Run a page.js reader in the crawl tab again, without loading anything (e.g. open one Gmail result)."""
+        page = self._crawl_page
+        if page is None or page.is_closed():
+            return {}
+        try:
+            got = page.evaluate(PAGE_CALL_JS, {"fn": reader, "args": args or {}})
+        except Exception:  # noqa: BLE001 - the page is changing
+            return {}
+        return got if isinstance(got, dict) else {}
 
     def crawl_close(self) -> str:
         page, self._crawl_page = self._crawl_page, None
@@ -966,6 +1023,23 @@ class BrowserSession(_Common):
             self._settle()
             return f"Entered the saved {field} for {site} and pressed Enter.\n" + self._snapshot(max_items=80, text_chars=1000)
         return f"Entered the saved {field} for {site} into \"{(item or {}).get('label', element_id)}\"."
+
+    def type_code(self, element_id, code: str):
+        """A login code: real key presses (codes split into one box per digit move on by themselves), or one
+        character per box when the boxes don't. The code isn't echoed back."""
+        self._ensure()
+        boxes = code_boxes(self.items, int(element_id))
+        if len(boxes) > 1 and len(boxes) >= len(code):
+            for eid, ch in zip(boxes, code):
+                loc, _ = self._locator(eid)
+                loc.fill(ch, timeout=5000)
+        else:
+            loc, _ = self._locator(element_id)
+            loc.click(timeout=8000)
+            loc.fill("", timeout=5000)
+            loc.press_sequentially(code, delay=70, timeout=15000)
+        self._settle(700)
+        return self._snapshot(max_items=70, text_chars=900)
 
     def select(self, element_id, option):
         self._ensure()
@@ -1260,15 +1334,28 @@ class ExtensionSession(_Common):
             pass
 
     def _snapshot(self, max_items: int = 90, text_chars: int = 1500, filter_text: str | None = None) -> str:
+        try:   # nags are closed before Karya looks (an older extension without the op just says no)
+            closed = (self._req("act", frame=0, op="closepopups", args={}) or {}).get("closed") or []
+            for c in closed:
+                link.events.append(f"Closed a pop-up: \"{c.get('text', '')[:80]}\" ({c.get('button', '')})")
+            if closed:
+                time.sleep(0.5)
+        except Exception:  # noqa: BLE001 - never blocks a snapshot
+            pass
         snap = self._req("snapshot", timeout=40, next=self.next_id, reset=self.fresh, max=400, text_chars=text_chars)
         items, self.next_id = snap_result({"items": snap.get("items"), "next": snap.get("next")}, self.next_id)
         self.fresh = False
         self.items = {it["id"]: it for it in items}
         self.frames = {it["id"]: int(it.get("frame") or 0) for it in items}
         self.url, self.title = snap.get("url") or "", snap.get("title") or ""
+        try:
+            popups = self._req("act", frame=0, op="popups", args={})
+        except Exception:  # noqa: BLE001
+            popups = []
         events, link.events[:] = link.events[-5:], []
         return format_snapshot(self.url, self.title, items, events, snap.get("text") or "", max_items, text_chars,
-                               filter_text, where="(Karya's tab in your Chrome)")
+                               filter_text, where="(Karya's tab in your Chrome)",
+                               popups=popups if isinstance(popups, list) else [])
 
     def _pause(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -1408,6 +1495,16 @@ class ExtensionSession(_Common):
             return f"Entered the saved {field} for {site} and pressed Enter.\n" + self._snapshot(max_items=80, text_chars=1000)
         return f"Entered the saved {field} for {site} into \"{item.get('label', eid)}\"."
 
+    def type_code(self, element_id, code: str):
+        eid = int(element_id)
+        boxes = code_boxes(self.items, eid)
+        targets = list(zip(boxes, code)) if len(boxes) > 1 and len(boxes) >= len(code) else [(eid, code)]
+        for box, value in targets:
+            if self._native_type(box, value) is None:
+                self._act(box, "set", value=value, secret=True, pick=False)
+        self._settle(700)
+        return self._snapshot(max_items=70, text_chars=900)
+
     def select(self, element_id, option):
         result = self._act(int(element_id), "select", option=str(option))
         self._settle(400)
@@ -1481,12 +1578,20 @@ class ExtensionSession(_Common):
         target.write_bytes(base64.b64decode(png))
         return f"Saved screenshot: {target}" + (" (visible part of the page only)" if full_page else "")
 
-    def crawl_read(self, url: str, scrolls: int = 1) -> dict:
+    def crawl_read(self, url: str, scrolls: int = 1, reader: str = "") -> dict:
         """One page for crawl_site in a Karya tab of its own (opened on the first page, reused, closed by crawl_close)."""
         first = not getattr(self, "_crawling", False)
         self._req("open", timeout=60, url=url, new_tab=first)
         self._crawling = True
         time.sleep(1.2)
+        if reader:
+            got = {}
+            for _ in range(8):
+                got = self._req("act", frame=0, op=reader.lower(), args={}) or {}
+                if not isinstance(got, dict) or got.get("rows") or got.get("signed_out"):
+                    break
+                time.sleep(1.2)
+            return got if isinstance(got, dict) else {}
         posts, seen, dry = [], set(), 0
         for n in range(max(0, int(scrolls)) + 1):
             if scrolls:
@@ -1501,6 +1606,15 @@ class ExtensionSession(_Common):
         _add_posts(posts, seen, got.get("posts"))
         got["posts"] = posts
         return got
+
+    def crawl_act(self, reader: str, args: dict | None = None) -> dict:
+        if not getattr(self, "_crawling", False):
+            return {}
+        try:
+            got = self._req("act", frame=0, op=reader.lower(), args=args or {})
+        except RuntimeError:
+            return {}
+        return got if isinstance(got, dict) else {}
 
     def crawl_close(self) -> str:
         if getattr(self, "_crawling", False):

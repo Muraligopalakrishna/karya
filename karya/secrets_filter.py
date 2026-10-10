@@ -79,4 +79,9 @@ def scrub(text):
             text = text.replace(secret, "***hidden***")
     for pattern in _PATTERNS:
         text = pattern.sub("***hidden***", text)
+    try:   # one-time login codes Karya typed (while they're still valid)
+        from .login_codes import hide
+        text = hide(text)
+    except Exception:  # noqa: BLE001 - never let scrubbing crash a result
+        pass
     return _ENV_LINE.sub(lambda m: m.group(1) + "***hidden***", text)

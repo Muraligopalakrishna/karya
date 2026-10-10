@@ -209,6 +209,17 @@ def update(key: str, **fields) -> dict:
         return agent
 
 
+def forget_files(agent_id: str) -> None:
+    """A deleted bot's history, pick list and job shortlist."""
+    from .tools import jobs
+    for path in (history_path(agent_id), jobs.CACHE_DIR / f"last_jobs.{agent_id}.json",
+                 jobs.CACHE_DIR / f"apply_queue.{agent_id}.json"):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def delete(key: str) -> dict:
     with _LOCK:
         agents = load()
@@ -216,10 +227,7 @@ def delete(key: str) -> dict:
         if agent is None:
             raise ValueError(f"no bot {key!r}")
         _save([a for a in agents if a["id"] != agent["id"]])
-    try:
-        history_path(agent["id"]).unlink(missing_ok=True)
-    except OSError:
-        pass
+    forget_files(agent["id"])
     return agent
 
 

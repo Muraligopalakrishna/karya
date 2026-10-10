@@ -120,7 +120,7 @@ GROUP_KEYWORDS = {
     "memory": r"remember|forget|my name|about me|preference",
     "resume": r"resume|\bcv\b|apply|application|job|hiring|internship|cover letter",
     "accounts": r"log ?in|sign ?in|sign ?up|signup|register|account|password|credential|apply|application|linkedin|"
-                r"upwork|freelancer|workatastartup|easy apply",
+                r"upwork|freelancer|workatastartup|easy apply|\botp\b|verification code|security code|login code",
     "agents": r"\bagents?\b|\bbots?\b|teammates?|helpers?|assign|hand (it|this) (over|off)|in the background|(^|\s)@\w|schedul|every (day|morning|evening|night|hour|week|monday|tuesday|wednesday|"
               r"thursday|friday|saturday|sunday|\d+ ?(min|hour|h\b))|daily|weekly|hourly|twice a day|each (day|morning)|"
               r"remind|recurring|in the background|keep (an eye|watching|checking)|watch (for|my)|monitor|alert me|"
@@ -170,7 +170,7 @@ ESSENTIAL = {
     "browser": {"browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_fill", "browser_select",
                 "browser_check", "browser_upload", "browser_scroll", "browser_read_text", "browser_press", "social_compose",
                 "browser_click_at", "browser_drag", "browser_move_piece", "how_to_post"},
-    "accounts": {"list_accounts", "request_credentials", "vault_new_password", "browser_type_secret"},
+    "accounts": {"list_accounts", "request_credentials", "vault_new_password", "browser_type_secret", "enter_login_code"},
     "files": {"read_file", "write_file", "list_files", "find_files"},
     "resume": {"get_resume_data", "import_resume", "tailor_resume", "add_resume_skills", "save_resume_data"},
 }

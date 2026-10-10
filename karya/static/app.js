@@ -974,9 +974,37 @@
     (first ? first[1] : ok).focus();
   }
 
+  function addCodeCard(ev) {
+    if (document.querySelector(`.ask[data-id="${CSS.escape(ev.id)}"]`)) return;
+    const box = document.createElement("form");
+    box.className = "confirm ask code-card"; box.dataset.id = ev.id; box.autocomplete = "off";
+    box.setAttribute("aria-label", "Login code needed");
+    const h = document.createElement("h4"); h.textContent = (ev.bot ? `${ev.bot} asks: ` : "") + `Login code for ${ev.site || "the site"}`;
+    const p = document.createElement("pre");
+    p.textContent = (ev.reason ? ev.reason + "\n" : "") + "Type the code here and Karya enters it on the page. It isn't saved.";
+    const input = document.createElement("input"); input.inputMode = "numeric"; input.autocomplete = "one-time-code";
+    input.placeholder = "the code, e.g. 123456"; input.setAttribute("aria-label", `Login code for ${ev.site || "the site"}`);
+    const buttons = document.createElement("div"); buttons.className = "buttons";
+    const ok = document.createElement("button"); ok.type = "submit"; ok.className = "approve"; ok.textContent = "Enter code";
+    const no = document.createElement("button"); no.type = "button"; no.className = "deny"; no.textContent = "Skip";
+    const done = (text, color) => { buttons.replaceChildren(); const r = document.createElement("span"); r.className = "result"; r.textContent = text; r.style.color = color; buttons.appendChild(r); input.disabled = true; };
+    box.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const code = input.value.trim(); if (!code) { input.focus(); return; }
+      send({ type: "ask_reply", id: ev.id, code }); input.value = ""; done("\u2714 Sent to the page", "var(--ok)");
+    });
+    no.onclick = () => { send({ type: "ask_reply", id: ev.id, cancel: true }); done("\u2716 Skipped", "var(--bad)"); };
+    buttons.append(ok, no);
+    box.append(h, p, input, buttons);
+    activityBox().appendChild(box);
+    scroll();
+    input.focus();
+  }
+
   function addAsk(ev) {
     if (ev.kind === "jobs") return addJobsCard(ev);
     if (ev.kind === "questions") return addQuestionsCard(ev);
+    if (ev.kind === "code") return addCodeCard(ev);
     if (document.querySelector(`.ask[data-id="${CSS.escape(ev.id)}"]`)) return;
     const box = document.createElement("form");
     box.className = "confirm ask"; box.dataset.id = ev.id; box.autocomplete = "off";

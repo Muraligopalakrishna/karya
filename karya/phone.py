@@ -97,6 +97,9 @@ class PhoneChannel:
         entry["prompted"] = True
         if entry["kind"] == "confirm":
             self.say(f"{who}Approve this?\n{str(request.get('summary') or 'an action')[:900]}\n\nReply YES or NO.{tail}")
+        elif request.get("kind") == "code":
+            self.say(f"{who}{request.get('site') or 'A site'} sent you a one-time login code (by text message or email) "
+                     f"and I couldn't find it in your email. Reply with just the code.{tail}")
         elif request.get("kind") == "jobs":
             rows = entry["rows"]
             lines = [f"{n}. {r.get('title', '')[:70]} - {r.get('company', '')} ({r.get('location') or '?'}), "
@@ -133,7 +136,7 @@ class PhoneChannel:
         if not self._routed(request):
             return
         kind = request.get("kind")
-        if kind in ("jobs", "questions"):
+        if kind in ("jobs", "questions", "code"):
             self._add({"kind": "ask", "request": request, "rows": (request.get("jobs") or [])[:15]})
         else:                                        # a login or anything secret: on the PC only
             who = request.get("bot") or "Karya"
@@ -177,8 +180,10 @@ class PhoneChannel:
         if first and first["kind"] == "ask" and not re.match(r"^\W*(stop|cancel)\b", low):
             data = self._answer(first, text)
             if data is None:
-                self.say("Reply with numbers like 1 3 5, ALL or NONE." if first["request"].get("kind") == "jobs"
-                         else "Please send the answers, one line each.")
+                kind = first["request"].get("kind")
+                self.say("Reply with numbers like 1 3 5, ALL or NONE." if kind == "jobs" else
+                         "Please send just the code (4 to 10 letters or digits)." if kind == "code" else
+                         "Please send the answers, one line each.")
                 return
             self.waiting.pop(0)
             hub.answer_ask(first["request"]["id"], data)
@@ -244,6 +249,10 @@ class PhoneChannel:
     @staticmethod
     def _answer(entry: dict, text: str) -> dict | None:
         ask = entry["request"]
+        if ask.get("kind") == "code":
+            from .login_codes import clean_code
+            code = clean_code(text)
+            return {"code": code} if code else None
         if ask.get("kind") == "jobs":
             rows = entry.get("rows") or []
             low = text.lower()
