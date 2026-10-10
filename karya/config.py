@@ -163,6 +163,8 @@ class Settings:
         self.mcp_tools = _env("KARYA_MCP_TOOLS", "")
         # Tasks from the user's phone: their WhatsApp "Message yourself" chat (see karya/whatsapp.py)
         self.whatsapp_enabled = _bool("WHATSAPP_ENABLED", False)
+        # Keep the PC from sleeping while Karya runs, so bots work on time (the screen can still turn off)
+        self.keep_awake = _bool("KARYA_KEEP_AWAKE", False)
         # Daily limits that protect the user's accounts from being flagged as spam (any AI, any mode)
         self.max_emails_per_day = _int("KARYA_MAX_EMAILS_PER_DAY", 40)
         self.max_posts_per_day = _int("KARYA_MAX_POSTS_PER_DAY", 10)
@@ -248,7 +250,8 @@ EDITABLE_KEYS = tuple([k for p in PRESETS for k in (p.key_env, f"{p.name.upper()
                         "KARYA_MCP_ENABLED", "KARYA_MCP_TOOLS", "KARYA_MAX_EMAILS_PER_DAY", "KARYA_MAX_POSTS_PER_DAY",
                         "KARYA_MAX_APPLICATIONS_PER_DAY", "KARYA_FULL_ACCESS", "KARYA_FULL_ACCESS_PAYMENTS",
                         "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED",
-                        "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL"])
+                        "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL",
+                        "KARYA_KEEP_AWAKE"])
 SECRET_KEYS = {p.key_env for p in PRESETS} | {"CUSTOM_API_KEY", "EMAIL_APP_PASSWORD", "VERCEL_TOKEN"}
 
 

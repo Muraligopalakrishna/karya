@@ -7,10 +7,13 @@ are shown: not a copy of an older answer, no "sent/submitted" claim without proo
 Karya to keep going."""
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 import json
 import re
 
 CURRENT: dict = {}   # the latest task note, for the task_status tool (set by the agent every step)
+BLOCK: ContextVar[str] = ContextVar("karya_task_block", default="")   # the same, per run (the chat and each bot)
 CRITICAL_OK = "KARYA-OK:"   # prefix of the agent's record of an approved critical action that ran without errors
 
 # ---------------------------------------------------------------- which task a message belongs to

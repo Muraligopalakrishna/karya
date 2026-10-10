@@ -121,7 +121,7 @@ GROUP_KEYWORDS = {
     "resume": r"resume|\bcv\b|apply|application|job|hiring|internship|cover letter",
     "accounts": r"log ?in|sign ?in|sign ?up|signup|register|account|password|credential|apply|application|linkedin|"
                 r"upwork|freelancer|workatastartup|easy apply",
-    "agents": r"\bagents?\b|\bbots?\b|schedul|every (day|morning|evening|night|hour|week|monday|tuesday|wednesday|"
+    "agents": r"\bagents?\b|\bbots?\b|teammates?|helpers?|assign|hand (it|this) (over|off)|in the background|(^|\s)@\w|schedul|every (day|morning|evening|night|hour|week|monday|tuesday|wednesday|"
               r"thursday|friday|saturday|sunday|\d+ ?(min|hour|h\b))|daily|weekly|hourly|twice a day|each (day|morning)|"
               r"remind|recurring|in the background|keep (an eye|watching|checking)|watch (for|my)|monitor|alert me|"
               r"whatsapp|from my (phone|mobile)|on my (phone|mobile)",
@@ -135,6 +135,12 @@ GROUP_COMPANIONS = {"jobs": {"resume", "browser", "accounts"}, "accounts": {"bro
 def route_groups(text: str) -> set[str]:
     low = (text or "").lower()
     groups = {g for g, pattern in GROUP_KEYWORDS.items() if _re.search(pattern, low)}
+    try:                                    # "ask Maya to..." names one of the user's bots
+        from . import scheduler
+        if any(_re.search(rf"(?<!\w){_re.escape(a['name'].lower())}(?!\w)", low) for a in scheduler.load()):
+            groups.add("agents")
+    except Exception:  # noqa: BLE001 - routing never fails because of the bots file
+        pass
     for g in list(groups):
         groups |= GROUP_COMPANIONS.get(g, set())
     return groups

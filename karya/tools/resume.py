@@ -482,7 +482,8 @@ def prepare_next(count: int = 3) -> None:
         key = _prep_key(job["id"])
         with _PREP_LOCK:
             if key not in _PREPARED:
-                _PREPARED[key] = _PREP_POOL.submit(_prepare_one, job["id"])
+                import contextvars         # the worker keeps the run's context (a bot's own job list)
+                _PREPARED[key] = _PREP_POOL.submit(contextvars.copy_context().run, _prepare_one, job["id"])
 
 
 def _prepare_one(job_id: str):

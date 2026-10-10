@@ -155,3 +155,18 @@ button.small { padding: 3px 10px; font-size: 12px; }
 .mcp-apps li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 3px 0; font-size: 13px; }
 details.advanced { margin: 8px 0; }
 details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 4px 0; }
+
+/* Bots */
+.bot-card { width: min(900px, 94vw); margin: 0 auto 10px; background: var(--panel2); border: 1px solid var(--accent2); border-radius: 12px; padding: 6px 12px; font-size: 13px; }
+.bot-card summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.bot-card .bot-title { font-weight: 600; color: var(--text); }
+.bot-card .bot-task { color: var(--muted); }
+.bot-card .bot-state { color: var(--muted); font-size: 12px; }
+.bot-card .bot-steps { margin: 6px 0 2px; max-height: 260px; overflow-y: auto; }
+.bot-card .bot-steps .step { margin: 3px 0; }
+.bot-report .bubble { border-color: var(--accent2); }
+.give-task, .make-bot { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.give-task input, .make-bot input { flex: 1 1 200px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--text); }
+.make-bot input[type=time], .make-bot input[type=number] { flex: 0 0 110px; }
+.make-bot select { background: var(--bg); color: var(--text); }
+.toggle-row { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin: 8px 0; cursor: pointer; }

@@ -8,6 +8,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 import uuid
 import webbrowser
 
@@ -45,8 +46,12 @@ def index_html(version: str) -> str:
     return text.replace('<meta charset="utf-8">', f'<meta charset="utf-8">\n  <meta name="karya-ui" content="{version}">', 1)
 
 
+MAX_BOTS = 2   # bots working at the same time (each step uses the user's AI plan)
+
+
 class Hub:
-    """Connects the single agent to every open Karya tab (all of them see the same chat and approval cards)."""
+    """Connects the chat's agent and the user's bots to every open Karya tab (all of them see the same chat and
+    approval cards). The chat runs one task at a time; bots run on their own agents, in parallel with it."""
 
     def __init__(self, agent: Agent):
         self.agent = agent
@@ -56,8 +61,110 @@ class Hub:
         self.task: asyncio.Task | None = None
         self.mcp_client: str | None = None   # the AI app (over MCP) whose tool call is running right now
         self.source, self.label = "chat", "the chat"   # who started the running task: chat, phone, agent:<id>
-        self.queue: list[dict] = []          # tasks that came in (WhatsApp, background agents) while Karya was busy
-        self.listeners: list = []            # WhatsApp and the agents' report keeper: on_confirm, on_ask, on_done
+        self.queue: list[dict] = []          # tasks that came in (WhatsApp) while the chat was busy
+        self.listeners: list = []            # WhatsApp and the bots' report keeper: on_confirm, on_ask, on_done...
+        self.bots: dict[str, dict] = {}      # bot id -> its run in progress
+        self.bot_queue: list[dict] = []      # bot tasks waiting for the bot (or a free slot)
+        self.bot_agents: dict[str, Agent] = {}
+        self.make_bot = self._make_bot       # tests swap in a fake agent
+
+    def _make_bot(self, record: dict) -> Agent:
+        from . import scheduler
+        return Agent(llm=self.agent.llm, history_file=scheduler.history_path(record["id"]), bot=record)
+
+    def set_llm(self, llm) -> None:
+        """A new key or model: the chat and every bot use it from their next step."""
+        self.agent.llm = llm
+        for bot in self.bot_agents.values():
+            bot.llm = llm
+
+    # ---------------------------------------------------------------- bots
+    def bot_running(self, agent_id: str) -> bool:
+        return agent_id in self.bots
+
+    def bot_state(self, agent_id: str) -> dict | None:
+        entry = self.bots.get(agent_id)
+        queued = sum(1 for item in self.bot_queue if item["agent_id"] == agent_id)
+        if entry is None:
+            return {"queued": queued} if queued else None
+        return {"doing": entry["task"][:200], "since": int(time.time() - entry["started"]), "queued": queued}
+
+    def bots_running(self) -> list[dict]:
+        return [{"run": e["run"].id, "bot": e["run"].bot, "agent_id": aid, "task": e["task"][:300]}
+                for aid, e in self.bots.items()]
+
+    async def assign(self, agent_id: str, task: str | None, source: str = "assigned",
+                     user_words: str | None = None) -> str:
+        """Give a bot a task (None = its own job). Returns 'started', or 'queued' while the bot is busy or
+        MAX_BOTS bots are working."""
+        from . import scheduler
+        record = scheduler.find(agent_id)
+        if record is None:
+            raise ValueError(f"no bot {agent_id!r}")
+        item = {"agent_id": record["id"], "task": task, "source": source, "user_words": user_words}
+        if record["id"] in self.bots or len(self.bots) >= MAX_BOTS:
+            self.bot_queue.append(item)
+            return "queued"
+        await self._start_bot(record, item)
+        return "started"
+
+    async def _start_bot(self, record: dict, item: dict) -> None:
+        from . import runctx, scheduler
+        agent = self.bot_agents.get(record["id"]) or self.make_bot(record)
+        self.bot_agents[record["id"]] = agent
+        task_now = item["task"] or record["task"]
+        agent.bot = {**record, "_task_now": task_now}
+        agent.auto_mode = getattr(self.agent, "auto_mode", False)
+        run = runctx.Run(id="b" + uuid.uuid4().hex[:8], source=item["source"], bot=record["name"],
+                         agent_id=record["id"])
+        entry = {"run": run, "task": task_now, "started": time.time(), "agent": agent}
+        self.bots[record["id"]] = entry
+        text = scheduler.run_text(record, item["task"], item["source"])
+
+        async def emit(event: dict) -> None:
+            if event.get("type") != "busy":                 # the chat's busy state is the chat's own
+                await self.send({**event, "run": run.id, "bot": run.bot})
+
+        async def runner():
+            runctx.RUN.set(run)
+            await self.send({"type": "bot_started", "run": run.id, "bot": run.bot, "agent_id": record["id"],
+                             "task": task_now[:300], "source": item["source"]})
+            report, ok = "", True
+            try:
+                report = await agent.run(text, emit, self.confirm, self.ask, user_words=item.get("user_words")) or ""
+            except Exception as exc:  # noqa: BLE001 - one bot failing never stops Karya
+                ok, report = False, f"{run.bot} stopped because of an internal error: {type(exc).__name__}: {exc}"
+            finally:
+                self.bots.pop(record["id"], None)
+                from . import desk
+                desk.DESK.release(run.id)
+                await self.send({"type": "bot_done", "run": run.id, "bot": run.bot, "agent_id": record["id"],
+                                 "task": task_now[:300], "report": report, "ok": ok})
+                await self._tell("on_bot_done", record, task_now, report, item["source"])
+                await self._next_bot()
+        entry["future"] = asyncio.create_task(runner())
+
+    async def _next_bot(self) -> None:
+        from . import scheduler
+        while self.bot_queue and len(self.bots) < MAX_BOTS:
+            index = next((i for i, it in enumerate(self.bot_queue) if it["agent_id"] not in self.bots), None)
+            if index is None:
+                return
+            item = self.bot_queue.pop(index)
+            record = scheduler.find(item["agent_id"])
+            if record is not None:
+                await self._start_bot(record, item)
+
+    def stop_bot(self, agent_id: str) -> bool:
+        """Stop a bot's current work and drop its waiting tasks. True if there was something to stop."""
+        dropped = [it for it in self.bot_queue if it["agent_id"] == agent_id]
+        self.bot_queue = [it for it in self.bot_queue if it["agent_id"] != agent_id]
+        entry = self.bots.get(agent_id)
+        if entry is None:
+            return bool(dropped)
+        entry["agent"].cancel()
+        self.deny_all(entry["run"].id)
+        return True
 
     @property
     def ws(self) -> WebSocket | None:  # kept for older callers/tests
@@ -66,13 +173,20 @@ class Hub:
     def busy_now(self) -> bool:
         return bool(self.agent.busy or self.mcp_client or (self.task is not None and not self.task.done()))
 
-    def _wait_limit(self) -> float | None:
-        """Nobody may be at the PC for a task from the phone or a background agent: an unanswered approval is
-        refused after a while instead of holding Karya forever."""
-        if self.source == "chat":
+    def _wait_limit(self, run=None) -> float | None:
+        """Nobody may be at the PC for a bot's work or a task from the phone: an unanswered approval is refused
+        after a while instead of holding it forever."""
+        if not (run is not None and run.is_bot) and self.source == "chat":
             return None
         from .scheduler import UNATTENDED_MINUTES
         return UNATTENDED_MINUTES * 60.0
+
+    def _tagged(self, request: dict) -> tuple[dict, object]:
+        """Every approval or question gets its own id, and says which run (and bot) it's for."""
+        from . import runctx
+        run = runctx.current()
+        return {**request, "call_id": request.get("id"), "id": uuid.uuid4().hex, "run": run.id, "bot": run.bot,
+                "source": run.source if run.is_bot else self.source}, run
 
     async def _tell(self, method: str, *args) -> None:
         for listener in list(self.listeners):
@@ -108,15 +222,17 @@ class Hub:
     async def confirm(self, request: dict) -> bool:
         # Tool-call ids can repeat across turns (or be empty) with some providers, so every approval
         # request gets its own id; the card and the answer are matched on that.
-        request = {**request, "call_id": request.get("id"), "id": uuid.uuid4().hex}
+        request, run = self._tagged(request)
         future = asyncio.get_running_loop().create_future()
         self.pending[request["id"]] = (future, request)
         await self.send({"type": "confirm", **request})
         await self._tell("on_confirm", request)
         from .ext_link import link
-        link.notify("attention", {"on": True, "text": str(request.get("summary") or "approval needed")[:150]})
+        who = f"{run.bot}: " if run.is_bot else ""
+        link.notify("attention", {"on": True, "text": (who + str(request.get("summary") or "approval needed"))[:150]})
+        approved = False
         try:
-            limit = self._wait_limit()
+            limit = self._wait_limit(run)
             try:
                 approved = await (asyncio.wait_for(future, limit) if limit else future)
             except asyncio.TimeoutError:
@@ -127,6 +243,7 @@ class Hub:
             return approved
         finally:
             self.pending.pop(request["id"], None)
+            await self._tell("on_confirm_done", request["id"], bool(approved))
             if not self.pending and not self.asks:
                 link.notify("attention", {"on": False})
 
@@ -135,25 +252,27 @@ class Hub:
         if entry and not entry[0].done():
             entry[0].set_result(bool(approved))
 
-    def deny_all(self) -> None:
-        for future, _ in list(self.pending.values()):
-            if not future.done():
+    def deny_all(self, run_id: str = "main") -> None:
+        """Refuse the open approvals and questions of one run (the chat's by default; bots keep theirs)."""
+        for future, request in list(self.pending.values()):
+            if request.get("run", "main") == run_id and not future.done():
                 future.set_result(False)
-        for future, _ in list(self.asks.values()):
-            if not future.done():
+        for future, request in list(self.asks.values()):
+            if request.get("run", "main") == run_id and not future.done():
                 future.set_result(None)
 
     async def ask(self, request: dict) -> dict | None:
         """Secure form (e.g. a login). The answer goes to the agent's vault code, never into the chat history."""
-        request = {**request, "call_id": request.get("id"), "id": uuid.uuid4().hex}
+        request, run = self._tagged(request)
         future = asyncio.get_running_loop().create_future()
         self.asks[request["id"]] = (future, request)
         await self.send({"type": "ask", **request})
         await self._tell("on_ask", request)
         from .ext_link import link
-        link.notify("attention", {"on": True, "text": "Karya is asking you something in its chat"})
+        link.notify("attention", {"on": True, "text": f"{run.bot or 'Karya'} is asking you something in Karya's chat"})
+        answer = None
         try:
-            limit = self._wait_limit()
+            limit = self._wait_limit(run)
             try:
                 answer = await (asyncio.wait_for(future, limit) if limit else future)
             except asyncio.TimeoutError:
@@ -162,6 +281,7 @@ class Hub:
             return answer
         finally:
             self.asks.pop(request["id"], None)
+            await self._tell("on_ask_done", request["id"], bool(answer))
             if not self.pending and not self.asks:
                 link.notify("attention", {"on": False})
 
@@ -203,9 +323,12 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         if background:
             from . import phone, scheduler
             hub: Hub = app.state.hub
+            scheduler.HUB, scheduler.LOOP = hub, asyncio.get_running_loop()
             channel = phone.start(hub, asyncio.get_running_loop())
             hub.listeners += [scheduler.Hooks(), channel]
             app.state.scheduler_task = asyncio.create_task(scheduler.loop(hub))
+            from . import awake
+            awake.start(hub)
         yield
         if background:
             app.state.scheduler_task.cancel()
@@ -317,7 +440,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         return {**settings.status(), "tools": len(TOOLS), "auto_mode": hub.agent.auto_mode, "busy": hub.agent.busy,
                 "running": hub.label if hub.busy_now() else None, "queued": len(hub.queue),
                 "whatsapp": phone.CHANNEL.status() if phone.CHANNEL else {"state": "off", "detail": ""},
-                "agents": [scheduler._row(a) for a in scheduler.load()],
+                "agents": [scheduler._row(a) for a in scheduler.load()], "bots_running": hub.bots_running(),
+                "keep_awake": settings.keep_awake,
                 "browser_link": link.status(), "extension_dir": str(EXTENSION_DIR), "browser_mode": settings.browser_mode,
                 "checks": {k: {f: v.get(f) for f in ("ok", "model", "plan", "tokens_per_minute", "summary", "error")}
                            for k, v in checks.items() if k in {p.name for p in settings.providers}}}
@@ -345,7 +469,7 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         hub: Hub = app.state.hub
-        hub.agent.llm = LLMClient(settings.providers)  # new keys take effect for the next message
+        hub.set_llm(LLMClient(settings.providers))  # new keys take effect for the next message
         if "APPROVAL_MODE" in changed:
             hub.agent.auto_mode = settings.approval_mode == "auto"
         touched = {p.name for p in PRESETS if p.key_env in changed or f"{p.name.upper()}_MODEL" in changed}
@@ -365,7 +489,7 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
     # ---------------------------------------------------------------- Setup > Connect your AI
     def refresh_ai() -> None:
         from .llm import LLMClient
-        app.state.hub.agent.llm = LLMClient(settings.providers)  # used from the next step on
+        app.state.hub.set_llm(LLMClient(settings.providers))  # the chat and the bots use it from the next step on
 
     async def check(name: str) -> list[dict]:
         return await asyncio.to_thread(_check_providers, app.state.hub.agent.llm, {name})
@@ -473,18 +597,40 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         if not allowed(request, token):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         from . import scheduler
+        hub: Hub = app.state.hub
+        note = ""
         try:
             body = dict(await request.json())
             action, key = str(body.get("action", "")), str(body.get("agent", ""))
-            if action == "delete":
-                scheduler.delete(key)
-            elif action in ("pause", "resume", "run"):
-                scheduler.update(key, enabled=action != "pause" if action != "run" else None, run_now=action == "run")
+            found = scheduler.find(key) if action != "create" else None
+            if action != "create" and found is None:
+                raise ValueError(f"no bot {key!r}")
+            if action == "create":
+                when = str(body.get("when", "on_demand"))
+                created = scheduler.create(str(body.get("name", "")), str(body.get("task", "")),
+                                           every_minutes=int(float(body.get("hours") or 0) * 60) or None
+                                           if when == "every" else None,
+                                           daily_at=[str(body.get("time") or "09:00")] if when == "daily" else None,
+                                           weekdays=["weekdays"] if body.get("weekdays_only") else None)
+                note = f"Made {created['name']}. Give it a task below, or write \"@{created['name']} ...\" in the chat."
+            elif action == "delete":
+                hub.stop_bot(found["id"])
+                scheduler.delete(found["id"])
+            elif action == "stop":
+                note = "Stopped." if hub.stop_bot(found["id"]) else "It wasn't working on anything."
+            elif action in ("assign", "run"):
+                task = str(body.get("task", "")).strip()[:4000] if action == "assign" else None
+                if action == "assign" and not task:
+                    raise ValueError("type the task first")
+                state = await hub.assign(found["id"], task, source="assigned", user_words=task)
+                note = f"{found['name']} {'started' if state == 'started' else 'has it queued'}."
+            elif action in ("pause", "resume"):
+                scheduler.update(found["id"], enabled=action == "resume")
             else:
                 return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        return {"agents": [scheduler._row(a) for a in scheduler.load()]}
+        return {"agents": [scheduler._row(a) for a in scheduler.load()], "note": note}
 
     @app.get("/api/accounts")
     async def get_accounts(request: Request, token: str = ""):
@@ -524,7 +670,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         hub: Hub = app.state.hub
         hub.clients.add(websocket)
         await websocket.send_json({"type": "history", "messages": hub.agent.visible_history(),
-                                   "busy": hub.agent.busy, "auto_mode": hub.agent.auto_mode, "keep_going": settings.keep_going})
+                                   "busy": hub.agent.busy, "auto_mode": hub.agent.auto_mode, "keep_going": settings.keep_going,
+                                   "bots": hub.bots_running()})
         page_version, current = websocket.query_params.get("ui", ""), ui_version()
         if page_version and page_version != current:
             await websocket.send_json({"type": "reload"})
@@ -541,6 +688,17 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                 if kind == "chat":
                     text = str(data.get("text", "")).strip()
                     if not text:
+                        continue
+                    from . import scheduler
+                    target = scheduler.addressed(text)
+                    if target:                      # "@Maya find PM jobs": straight to that bot, the chat stays free
+                        bot, task = target
+                        state = await hub.assign(bot["id"], task[:4000], source="assigned", user_words=task[:4000])
+                        await hub.send({"type": "assistant", "text": (
+                            f"{bot['name']} is on it. It works in the background and reports here (and on WhatsApp)."
+                            if state == "started" else
+                            f"{bot['name']} has it queued: it finishes its current work first.")})
+                        await websocket.send_json({"type": "busy", "value": bool(hub.agent.busy)})
                         continue
                     if hub.agent.busy:
                         running = "the last request" if hub.source == "chat" else f"a task from {hub.label}"
@@ -577,6 +735,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                 elif kind == "stop":
                     hub.agent.cancel()
                     hub.deny_all()
+                elif kind == "stop_bot":
+                    hub.stop_bot(str(data.get("agent", "")))
                 elif kind == "reset":
                     if hub.agent.busy:
                         hub.agent.cancel()

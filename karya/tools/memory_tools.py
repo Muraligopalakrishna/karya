@@ -86,7 +86,7 @@ def karya_activity(days: int = 1):
       "Check it when you're unsure what to do next.", group="core")
 def task_status():
     from .. import focus
-    return focus.CURRENT.get("block") or "No task in progress."
+    return focus.BLOCK.get() or focus.CURRENT.get("block") or "No task in progress."
 
 
 @tool("enable_tools", "Load more tool groups when you need a capability you don't see: "

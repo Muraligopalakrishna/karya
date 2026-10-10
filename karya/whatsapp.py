@@ -34,19 +34,29 @@ READ_JS = r"""() => {
   const head = main.querySelector('header');
   let title = '';
   if (head) {
-    const t = head.querySelector('span[title]') || head.querySelector('[title]');
+    const t = head.querySelector('[data-testid="conversation-info-header-chat-title"] span[title], span[title]')
+      || head.querySelector('[title]');
     title = t ? (t.getAttribute('title') || txt(t)) : txt(head).split('\n')[0];
   }
+  const you = !!(head && head.querySelector('[data-testid="you-label"]')) || /\(you\)/i.test(txt(head));
+  // long messages show "Read more": open them so the whole task is read
+  [...main.querySelectorAll('[data-testid="caption-read-more-button"], [role="button"]')]
+    .filter((b) => /^read more$/i.test(txt(b))).slice(-5).forEach((b) => b.click());
   const out = [], seen = new Set();
   for (const node of main.querySelectorAll('[data-id]')) {
     const id = node.getAttribute('data-id') || '';
-    if (!/^(true|false)_/.test(id) || seen.has(id)) continue;
+    if (!id || seen.has(id)) continue;
+    if (node.parentElement && node.parentElement.closest('[data-id]')) continue;   // a quoted message inside one
+    if (!node.querySelector('[data-pre-plain-text], .copyable-text, [data-testid="msg-container"]')) continue;
     seen.add(id);
     const pre = node.querySelector('[data-pre-plain-text]');
-    const body = node.querySelector('.selectable-text') || pre;
-    out.push({ id, mine: id.startsWith('true_'), text: txt(body).slice(0, 4000) });
+    const body = node.querySelector('.selectable-text, [data-testid="selectable-text"]') || pre;
+    // old layout: ids start with true_/false_; new layout: plain ids, incoming bubbles have a tail-in
+    const incoming = /^false_/.test(id) || !!node.querySelector('.message-in, [data-testid="tail-in"]');
+    out.push({ id, mine: !incoming, text: txt(body).slice(0, 4000) });
   }
-  return { state: 'chat', title, messages: out, box: !!main.querySelector('footer [contenteditable="true"]') };
+  const box = !!main.querySelector('footer [contenteditable="true"], [data-testid="conversation-compose-box-input"]');
+  return { state: 'chat', title, you, messages: out, box };
 }"""
 
 
@@ -58,7 +68,7 @@ def is_self_chat(info: dict, owner: str) -> bool:
     """The open chat is the user's own "Message yourself" chat: its title says "(You)", or its messages carry the
     user's own number."""
     title = str(info.get("title") or "").strip().lower()
-    if "(you)" in title or title in ("you", "message yourself"):
+    if info.get("you") or "(you)" in title or title in ("you", "message yourself"):
         return True
     return bool(owner) and any(f"_{owner}@c.us_" in str(m.get("id")) for m in info.get("messages") or [])
 
@@ -222,7 +232,8 @@ class WhatsAppBridge:
             text = self._out.get()
             body = (text if text.startswith(TAG) else f"{TAG} {text}")[:3500]
             try:
-                box = page.locator('#main footer [contenteditable="true"]').last
+                box = page.locator('#main footer [contenteditable="true"], '
+                                   '#main [data-testid="conversation-compose-box-input"]').last
                 box.click(timeout=5000)
                 for n, line in enumerate(body.split("\n")):
                     if n:

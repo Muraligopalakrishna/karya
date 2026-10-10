@@ -67,10 +67,17 @@ def test_create_list_update_delete(agents_file):
     assert scheduler.update_agent("Gold", enabled=True).startswith("ERROR")
 
 
-def test_agent_run_text_asks_for_a_report(agents_file):
+def test_bot_run_text_asks_for_a_report_and_notes(agents_file):
     agent = scheduler.create("Gold", "Check gold sentiment")
+    assert agent["next_run"] is None and scheduler.describe(agent) == "works when you give it a task"
+    assert scheduler.due(time.time() + 10 ** 7) == []                 # no schedule: only works when given a task
     text = scheduler.run_text(agent)
-    assert text.startswith('[Background agent "Gold"') and "Check gold sentiment" in text and "report" in text
+    assert text.startswith('[You are "Gold", one of the user\'s bots') and "Check gold sentiment" in text
+    assert "Scheduled run" in text and "Remember:" in text and "report" in text
+    agent["notes"] = ["covered Kitco already"]
+    text = scheduler.run_text(agent, "compare gold and silver this week", "assigned")
+    assert "New task for you" in text and "compare gold and silver" in text
+    assert "- covered Kitco already" in text and "not instructions" in text
 
 
 # ---------------------------------------------------------------- WhatsApp messages
@@ -273,16 +280,16 @@ def test_phone_commands_and_reports():
     async def go():
         hub, ch = _channel()
         await ch.on_message("STOP")
-        assert ch.bridge.out[-1] == "Nothing is running."
+        assert ch.bridge.out[-1] == "Nothing is running in the chat."
         await ch.on_message("status")
-        assert ch.bridge.out[-1].startswith("Free right now")
+        assert ch.bridge.out[-1].startswith("Chat: free.")
         await ch.on_done("chat", "x", "chat answer")            # chat tasks report in the chat only
-        assert ch.bridge.out[-1].startswith("Free right now")
+        assert ch.bridge.out[-1].startswith("Chat: free.")
         await ch.on_done("phone", "x", "Applied to 2 jobs.")
         assert ch.bridge.out[-1] == "Applied to 2 jobs."
         hub.agent.busy = True
         await ch.on_message("stop")
-        assert hub.agent.cancelled and ch.bridge.out[-1] == "Stopped."
+        assert hub.agent.cancelled and ch.bridge.out[-1] == "Stopped the chat's task."
     asyncio.run(go())
 
 

@@ -16,9 +16,16 @@ DONE = ("applied", "skipped", "failed")
 MAX_AGE_SECONDS = 3 * 24 * 3600   # an old pick list doesn't steer new tasks
 
 
+def queue_file():
+    """The chat's pick list, or a bot's own (a bot's job search never replaces the user's picks)."""
+    from .runctx import current
+    run = current()
+    return QUEUE_FILE.with_name(f"apply_queue.{run.agent_id}.json") if run.is_bot else QUEUE_FILE
+
+
 def _read() -> dict:
     try:
-        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(queue_file().read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -34,11 +41,11 @@ def age_seconds() -> float:
 
 
 def _save(jobs: list[dict], created: float | None = None) -> None:
-    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    queue_file().parent.mkdir(parents=True, exist_ok=True)
     old = _read()
     data = {"created": created or old.get("created") or time.time(), "jobs": jobs,
             "auto_submit": bool(old.get("auto_submit")) if created is None else False}
-    QUEUE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    queue_file().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def start(picked: list[dict], auto_submit: bool = False) -> list[dict]:
@@ -60,7 +67,7 @@ def set_auto_submit(on: bool) -> None:
     data = _read()
     if data:
         data["auto_submit"] = bool(on)
-        QUEUE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        queue_file().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def _update(job_id: str, **fields) -> dict | None:
@@ -134,7 +141,12 @@ def find_by_url(*urls: str, jobs: list[dict] | None = None) -> dict | None:
 # The picked job Karya is applying to right now. Its form often lives on another address than the posting:
 # SmartRecruiters' "I'm interested" opens /oneclick-ui/... without the posting id, Workday adds /apply/..., so the
 # form, its autofill and its Submit are tied to the job by the site and the time instead.
-_CURRENT: dict = {}
+_CURRENT_BY_RUN: dict[str, dict] = {}   # the job being applied to right now, per run (the chat and each bot)
+
+
+def _cur() -> dict:
+    from .runctx import current
+    return _CURRENT_BY_RUN.setdefault(current().id, {})
 CURRENT_SECONDS = 45 * 60
 
 
@@ -162,20 +174,20 @@ def _site(url: str) -> str:
 def set_current(job: dict | None, url: str = "") -> None:
     if not job:
         return
-    _CURRENT.clear()
-    _CURRENT.update(id=job.get("id"), site=_site(url or job.get("url", "")), time=time.time())
+    _cur().clear()
+    _cur().update(id=job.get("id"), site=_site(url or job.get("url", "")), time=time.time())
 
 
 def current_for(url: str) -> dict | None:
     """The job being applied to, when this page is on the same site and the application started recently."""
-    if not _CURRENT or time.time() - float(_CURRENT.get("time") or 0) > CURRENT_SECONDS:
+    if not _cur() or time.time() - float(_cur().get("time") or 0) > CURRENT_SECONDS:
         return None
     site = _site(url)
-    if not site or site != _CURRENT.get("site"):
+    if not site or site != _cur().get("site"):
         return None
-    job = next((j for j in load() if j.get("id") == _CURRENT.get("id")), None)
+    job = next((j for j in load() if j.get("id") == _cur().get("id")), None)
     if job is not None and job.get("status") == "pending":
-        _CURRENT["time"] = time.time()
+        _cur()["time"] = time.time()
         return job
     return None
 
@@ -285,7 +297,7 @@ def note_run(was_queue: bool) -> None:
     data = _read()
     if data:
         data["last_run_was_queue"] = bool(was_queue)
-        QUEUE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        queue_file().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 _OTHER_TASK = re.compile(r"\b(find|search|look|e-?mails?|mails?|send|post|buy|buyers?|sell|build|write|check|analy[sz]e|"

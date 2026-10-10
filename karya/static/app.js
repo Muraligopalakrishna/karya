@@ -110,6 +110,63 @@
     st.pre.textContent = ev.preview || "";
   }
 
+  // ---------- bots: each run gets its own card, so their steps never mix with the chat's ----------
+  const botCards = new Map();
+  function botCard(ev) {
+    let card = botCards.get(ev.run);
+    if (card) return card;
+    hideWelcome();
+    const box = document.createElement("details"); box.className = "bot-card"; box.open = false;
+    box.setAttribute("aria-label", `${ev.bot} is working`);
+    const sum = document.createElement("summary");
+    const title = document.createElement("span"); title.className = "bot-title"; title.textContent = `${ev.bot} is working: `;
+    const task = document.createElement("span"); task.className = "bot-task"; task.textContent = (ev.task || "").slice(0, 160);
+    const state = document.createElement("span"); state.className = "bot-state typing"; state.textContent = "";
+    const stop = document.createElement("button"); stop.type = "button"; stop.className = "ghost small"; stop.textContent = "Stop";
+    stop.setAttribute("aria-label", `Stop ${ev.bot}`);
+    stop.addEventListener("click", (e) => { e.preventDefault(); send({ type: "stop_bot", agent: ev.agent_id }); stop.disabled = true; });
+    sum.append(title, task, " ", state, " ", stop);
+    const steps2 = document.createElement("div"); steps2.className = "bot-steps";
+    box.append(sum, steps2);
+    chat.appendChild(box);
+    card = { box, title, state, stop, steps: steps2, items: new Map(), bot: ev.bot };
+    botCards.set(ev.run, card);
+    scroll();
+    return card;
+  }
+  function botEvent(ev) {
+    if (!["tool_call", "tool_result", "note", "status", "assistant", "error"].includes(ev.type)) return false;
+    const card = botCard(ev);
+    if (ev.type === "status") { card.state.textContent = ev.text || ""; return true; }
+    if (ev.type === "assistant") return true;              // the report comes with bot_done
+    if (ev.type === "tool_call") {
+      const line = document.createElement("div"); line.className = "step run";
+      line.textContent = `\u25CF ${ev.name} \u2014 ${ev.summary || ""}`;
+      card.items.set(ev.id, line); card.steps.appendChild(line); return true;
+    }
+    if (ev.type === "tool_result") {
+      const line = card.items.get(ev.id);
+      if (line) { line.className = "step " + (ev.ok ? "ok" : "fail"); line.textContent = line.textContent.replace(/^\u25CF/, ev.ok ? "\u2714" : "\u2716"); }
+      return true;
+    }
+    const line = document.createElement("div"); line.className = ev.type === "error" ? "step fail" : "note"; line.textContent = ev.text || "";
+    card.steps.appendChild(line);
+    return true;
+  }
+  function botDone(ev) {
+    const card = botCard(ev);
+    card.title.textContent = `${ev.bot} ${ev.ok === false ? "stopped" : "finished"}: `;
+    card.state.textContent = ""; card.state.classList.remove("typing"); card.stop.remove();
+    botCards.delete(ev.run);
+    const row = document.createElement("div"); row.className = "msg assistant bot-report";
+    const bubble = document.createElement("div"); bubble.className = "bubble";
+    bubble.innerHTML = renderMarkdown(ev.report || "(no report)");
+    const meta = document.createElement("div"); meta.className = "meta"; meta.textContent = `from ${ev.bot}`;
+    bubble.appendChild(meta); row.appendChild(bubble);
+    card.box.after(row);
+    scroll();
+  }
+
   function addNote(text) {
     const n = document.createElement("div");
     n.className = "note";
@@ -126,7 +183,7 @@
     box.setAttribute("role", "alertdialog");
     box.setAttribute("aria-label", "Approval needed");
     const h = document.createElement("h4");
-    h.textContent = ev.risk === "critical" ? "Approval needed (sends/posts/submits or can't be undone)" : "Approval needed";
+    h.textContent = (ev.bot ? `${ev.bot} asks: ` : "") + (ev.risk === "critical" ? "Approval needed (sends/posts/submits or can't be undone)" : "Approval needed");
     const pre = document.createElement("pre"); pre.textContent = ev.summary || ev.tool;
     const buttons = document.createElement("div"); buttons.className = "buttons";
     const yes = document.createElement("button"); yes.type = "button"; yes.className = "approve"; yes.textContent = "Approve";
@@ -179,6 +236,7 @@
     };
     ws.onmessage = (msg) => {
       const ev = JSON.parse(msg.data);
+      if (ev.run && ev.type !== "confirm" && ev.type !== "ask" && botEvent(ev)) return;
       switch (ev.type) {
         case "history":
           sessionStorage.removeItem("karya-reloads");
@@ -189,7 +247,11 @@
           autoMode.checked = !!ev.auto_mode;
           keepGoing.checked = !!ev.keep_going;
           setBusy(!!ev.busy);
+          botCards.clear();
+          (ev.bots || []).forEach((b) => botCard({ run: b.run, bot: b.bot, agent_id: b.agent_id, task: b.task }));
           break;
+        case "bot_started": botCard(ev); loadStatus(); break;
+        case "bot_done": botDone(ev); loadStatus(); break;
         case "busy": setBusy(ev.value); break;
         case "user": addMessage("user", ev.text, ev.via ? `from ${ev.via}` : ""); break;
         case "status": statusLine.textContent = ev.text; statusLine.classList.add("typing"); break;
@@ -236,6 +298,7 @@
     const phone = panel.querySelector(".phone-box"), agentList = panel.querySelector(".agents-box");
     if (phone && phone.update) phone.update(s.whatsapp || {});
     if (agentList && agentList.update) agentList.update(s.agents || []);
+    if (agentList && agentList.setAwake) agentList.setAwake(s.keep_awake);
     clearTimeout(renderSetup.poll);
     if (["starting", "opening", "needs_qr"].includes((s.whatsapp || {}).state)) renderSetup.poll = setTimeout(loadStatus, 4000);
     statusBox.replaceChildren();
@@ -507,29 +570,73 @@
     return box;
   }
 
-  // ---------- Background agents ----------
+  // ---------- Bots ----------
   function agentsBox() {
-    const box = el("section", "agents-box"); box.setAttribute("aria-label", "Background agents");
+    const box = el("section", "agents-box"); box.setAttribute("aria-label", "Your bots");
     const list = el("ul", "agent-list");
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    const act = async (body) => {
+      try { const d = await api("/api/agents", body); box.update(d.agents || []); if (d.note) msg.textContent = d.note; return true; }
+      catch (e) { msg.textContent = "\u2716 " + e.message; return false; }
+    };
     box.update = (agents) => {
       list.replaceChildren();
-      if (!agents.length) { list.appendChild(el("li", "hint", "No agents yet.")); return; }
+      if (!agents.length) { list.appendChild(el("li", "hint", "No bots yet. Make one below, or ask Karya in the chat.")); return; }
       agents.forEach((a) => {
         const li = el("li");
-        const act = (action, label) => button(label, async () => {
-          if (action === "delete" && !confirm(`Delete the agent "${a.name}"?`)) return;
-          try { box.update((await api("/api/agents", { action, agent: a.id })).agents || []); } catch (e) { alert(e.message); }
-        }, "ghost small", `${label}: ${a.name}`);
+        const head = el("div", "agent-title", `${a.name} \u00b7 ${a.when}${a.enabled ? "" : " (paused)"}`);
+        if (a.working) head.append(" ", el("span", "ok", `\u25CF working: ${(a.doing || "").slice(0, 90)}`));
+        const give = el("form", "give-task"); give.autocomplete = "off";
+        const input = el("input"); input.placeholder = `Give ${a.name} a task...`; input.setAttribute("aria-label", `Task for ${a.name}`);
+        const go = el("button", "small", "Give task"); go.type = "submit";
+        give.append(input, go);
+        give.addEventListener("submit", async (e) => {
+          e.preventDefault(); const task = input.value.trim(); if (!task) { input.focus(); return; }
+          if (await act({ action: "assign", agent: a.id, task })) input.value = "";
+        });
         const actions = el("div", "agent-actions");
-        actions.append(act("run", "Run now"), act(a.enabled ? "pause" : "resume", a.enabled ? "Pause" : "Resume"), act("delete", "Delete"));
-        li.append(el("div", "agent-title", `${a.name} \u00b7 ${a.when}${a.enabled ? "" : " (paused)"}`), el("div", "hint", a.task),
-          el("div", "hint", (a.enabled ? `Next run: ${a.next_run}` : "Paused") + (a.last_report ? ` \u00b7 Last report: ${a.last_report}` : "")), actions);
+        if (a.working) actions.append(button("Stop", () => act({ action: "stop", agent: a.id }), "ghost small", `Stop ${a.name}`));
+        if (!a.working) actions.append(button("Do its job now", () => act({ action: "run", agent: a.id }), "ghost small", `Run ${a.name} now`));
+        if (a.when !== "works when you give it a task") actions.append(button(a.enabled ? "Pause schedule" : "Resume schedule",
+          () => act({ action: a.enabled ? "pause" : "resume", agent: a.id }), "ghost small", `${a.enabled ? "Pause" : "Resume"} ${a.name}`));
+        actions.append(button("Delete", () => { if (confirm(`Delete the bot "${a.name}" and its notes?`)) act({ action: "delete", agent: a.id }); }, "ghost small", `Delete ${a.name}`));
+        li.append(head, el("div", "hint", a.task),
+          el("div", "hint", (a.enabled && a.next_run && a.when !== "works when you give it a task" ? `Next run: ${a.next_run}` : "") +
+            (a.last_report ? `${a.enabled && a.when !== "works when you give it a task" ? " \u00b7 " : ""}Last report: ${a.last_report}` : "")),
+          give, actions);
         list.appendChild(li);
       });
     };
-    box.append(el("h3", "", "Background agents"),
-      el("p", "hint", "Tasks Karya does by itself on a schedule (while it's running) and reports on, here and on WhatsApp. Make one by asking Karya, for example: \"every morning at 9 find new PM jobs in Hyderabad and apply to the best 3\" or \"check gold sentiment twice a day and tell me\"."),
-      list);
+    // make a bot
+    const make = el("form", "make-bot"); make.autocomplete = "off";
+    const name = el("input"); name.placeholder = "Name, e.g. Maya"; name.setAttribute("aria-label", "Bot name"); name.maxLength = 40;
+    const job = el("input"); job.placeholder = "Its job, e.g. find product manager jobs in India that fit me and apply"; job.setAttribute("aria-label", "What the bot does");
+    const when = el("select"); when.setAttribute("aria-label", "When it works");
+    [["on_demand", "When I give it a task"], ["daily", "Every day at..."], ["every", "Every few hours"]].forEach(([v, label]) => { const o = el("option", "", label); o.value = v; when.appendChild(o); });
+    const time = el("input"); time.type = "time"; time.value = "09:00"; time.setAttribute("aria-label", "Time of day"); time.hidden = true;
+    const hours = el("input"); hours.type = "number"; hours.min = "1"; hours.max = "24"; hours.value = "4"; hours.setAttribute("aria-label", "Every how many hours"); hours.hidden = true;
+    when.addEventListener("change", () => { time.hidden = when.value !== "daily"; hours.hidden = when.value !== "every"; });
+    const add = el("button", "", "Make bot"); add.type = "submit";
+    make.append(name, job, when, time, hours, add);
+    make.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!name.value.trim() || !job.value.trim()) { (name.value.trim() ? job : name).focus(); return; }
+      if (await act({ action: "create", name: name.value.trim(), task: job.value.trim(), when: when.value, time: time.value, hours: hours.value })) {
+        name.value = ""; job.value = "";
+      }
+    });
+    // keep the PC awake
+    const awake = el("label", "toggle-row");
+    const awakeBox = el("input"); awakeBox.type = "checkbox";
+    awake.append(awakeBox, " Keep this PC awake while bots have a schedule or are working (the screen can still turn off; closing the lid still sleeps)");
+    awakeBox.addEventListener("change", async () => {
+      try { await api("/api/settings", { KARYA_KEEP_AWAKE: awakeBox.checked ? "true" : "false" }); msg.textContent = awakeBox.checked ? "The PC stays awake for your bots." : "Normal sleep settings."; }
+      catch (e) { msg.textContent = "\u2716 " + e.message; awakeBox.checked = !awakeBox.checked; }
+    });
+    box.setAwake = (on) => { awakeBox.checked = !!on; };
+    box.append(el("h3", "", "Your bots"),
+      el("p", "hint", "Bots are named helpers that work for you in the background, like Grok Bots or Dots, while you keep chatting. A bot can do anything Karya can: find and apply to jobs, research, watch markets, read and send email, post, fix PC problems, build websites. Give one a task here, write \"@Name task\" in the chat, or message \"@Name task\" on WhatsApp. It reports here and on WhatsApp, and remembers what it did. Two bots work at a time; they take turns with you on the browser."),
+      list, el("h4", "", "Make a bot"), make, awake, msg);
     box.update([]);
     return box;
   }
@@ -780,7 +887,7 @@
     const box = document.createElement("form");
     box.className = "confirm ask jobs-card"; box.dataset.id = ev.id;
     box.setAttribute("aria-label", "Choose jobs to apply to");
-    const h = document.createElement("h4"); h.textContent = "Pick the jobs to apply to";
+    const h = document.createElement("h4"); h.textContent = (ev.bot ? `${ev.bot} asks: ` : "") + "Pick the jobs to apply to";
     const p = document.createElement("pre"); p.textContent = (ev.note ? ev.note + "\n" : "") + "Nothing is sent until you approve each final Submit. Skipped companies won't be shown again.";
     const list = document.createElement("div"); list.className = "job-list";
     const anySuggested = (ev.jobs || []).some((j) => j.suggested);
@@ -826,7 +933,7 @@
     const box = document.createElement("form");
     box.className = "confirm ask questions-card"; box.dataset.id = ev.id; box.autocomplete = "off";
     box.setAttribute("aria-label", "Karya needs your answers");
-    const h = document.createElement("h4"); h.textContent = "Karya needs your answers";
+    const h = document.createElement("h4"); h.textContent = ev.bot ? `${ev.bot} needs your answers` : "Karya needs your answers";
     const p = document.createElement("pre");
     p.textContent = (ev.reason ? ev.reason + "\n" : "") + "Only you know these, so Karya won't guess them. They're saved on this PC for your next applications. Leave a box empty to skip it.";
     const fields = [];
@@ -900,12 +1007,13 @@
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || busy) return;
+    const toBot = text.startsWith("@");     // "@Maya ..." goes to a bot: the chat itself stays free
+    if (!text || (busy && !toBot)) return;
     addMessage("user", text);
     send({ type: "chat", text });
     input.value = "";
     input.style.height = "auto";
-    setBusy(true);
+    if (!toBot) setBusy(true);
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }

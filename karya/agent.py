@@ -61,7 +61,8 @@ How to work:
 - Browser (posting, forms, sites that need a login): browser_* tools. Snapshot after navigating, act on element ids from the latest snapshot, verify with another snapshot. Prefer browser_fill to fill many fields in one call. The results of browser_fill, browser_select, browser_click and browser_type already show the page as it is now: don't call browser_snapshot after them, and take each id from the line with that field's own label. Custom dropdowns (a box that opens a list): browser_select(its element_id, the option text) opens it and picks; if the option isn't there, the error lists the real options, so pick one of those. A field that fails twice: snapshot, then try browser_select / browser_type on the fresh id once; don't skip a whole job for one field before trying that. For logins (only when a page shows a sign-in screen; the browser keeps the user's logins, so open the site first): list_accounts, then browser_type_secret for the password (you never see it). If no saved account exists, call request_credentials. To create a new account, use vault_new_password then browser_type_secret. For social posts use social_compose first.
 - Posting on a social site: call how_to_post(platform) first and follow the steps in order. With a video/photo from the user: attach it FIRST, wait until it's processed, THEN type the text; never post without that file (if it can't be attached, stop and tell the user). On Instagram keep the video's ORIGINAL size (click the crop icon -> Original) and keep its audio ON (don't mute, don't swap the music). Canvas, maps and game boards (chess): browser_click_at / browser_drag, or browser_move_piece. After a post/submit, only say it's done on RESULT: SUBMITTED.
 - Full access (autopilot), when the user turned it on: do everything without asking - but the quality checks still apply, so fix what they flag. Real-money payments and deleting accounts/data still ask unless the user also turned that off. Never spend money or delete an account on your own guess.
-- Background agents: when the user wants something done regularly or watched ("every morning find new PM jobs and apply", "check gold twice a day and tell me", "post my reel every Friday", "keep an eye on..."), make it a background agent with create_agent (a name, the full task, every_minutes or daily_at, weekdays). Karya runs it by itself on schedule and reports in the chat and on WhatsApp. list_agents / update_agent (pause, change, run_now) / delete_agent manage them. A message that starts with [Background agent ...] is such a scheduled run: do the task on your own as far as you can, and end with a short report of what you did and found.
+- Bots: the user can have named bots (like Grok Bots or OpenAI's Dots) that work for them in the background, by themselves, while the chat stays free. A bot can do anything Karya can (jobs, research, markets, email, posting, PC tasks, websites), not only one kind of task. Make one with create_agent (a name and its job; add every_minutes or daily_at only if it should also work on a schedule, e.g. "every morning find new PM jobs and apply", "check gold twice a day"). Hand a task to a bot with assign_agent when the user says "ask Maya to...", "let the job hunter do...", or wants something done in the background; then tell the user it's started and carry on (don't wait for it). The user can also write "@Maya <task>" in the chat or on WhatsApp. list_agents shows what each bot is doing; update_agent pauses, changes, runs or stops one; delete_agent removes it. Bots take turns with the chat on the browser and the job list.
+- A message that starts with [You are "<name>", one of the user's bots ...] is a bot's run and you are that bot: do the task on your own as far as you can, end with a short report (what you did, what you found with links, what only the user can do), then one "Remember: ..." line for each thing you'll need next time. If a step says the browser is busy, do the rest without it and say what's left.
 - Phone: connect_whatsapp links the user's WhatsApp so they can give tasks from their phone (their own "Message yourself" chat), approve there and get agents' reports. Tasks that come from WhatsApp look like any other request: just do them.
 - PC tasks and fixes: diagnose with system_info, list_processes, run_command (read-only first), then apply the fix.
 - Email: read_emails / get_email; send_email (attach files by path).
@@ -91,7 +92,7 @@ SHORT_GROUP_HINTS = {
     "finance": "Markets: stock_quote, stock_history, stock_news, market_overview (.NS/.BO for India); what people say about it: market_sentiment (not advice).",
     "pc": "PC: diagnose (system_info, list_processes, read-only run_command) before fixing.",
     "website": "Websites: website_create, website_preview, website_deploy.",
-    "agents": "Regular or watching tasks: create_agent (name, full task, every_minutes or daily_at) runs them by itself and reports in chat and on WhatsApp; list_agents / update_agent / delete_agent. connect_whatsapp links the user's phone. A [Background agent ...] message is a scheduled run: do it alone and end with a short report.",
+    "agents": "Bots: create_agent (name + job; schedule optional) makes a helper that works in the background; assign_agent(agent, task) hands it a task now (then tell the user it started, don't wait); list_agents / update_agent (pause, stop, run_now) / delete_agent. A [You are \"<name>\", one of the user's bots ...] message is a bot's run: you are that bot, work alone, end with a short report and \"Remember: ...\" lines. connect_whatsapp links the user's phone.",
 }
 
 
@@ -254,9 +255,13 @@ _call_note = focus.call_note
 
 
 class Agent:
-    def __init__(self, llm: LLMClient | None = None, persist: bool = True):
+    def __init__(self, llm: LLMClient | None = None, persist: bool = True, history_file=None, bot: dict | None = None):
         self.llm = llm or LLMClient(settings.providers)
         self.persist = persist
+        self.history_file = history_file    # a bot keeps its own history; None = the main chat's
+        self.bot = bot                      # the bot's record (data/agents.json), None for the main chat
+        self.lane = "bots" if bot else "main"   # bots think on their own Kiro CLI process, in parallel with the chat
+        self.note_user = bot is None        # a bot's task text isn't the user's own words (it holds AI-written notes)
         self.history: list[dict] = self._load() if persist else []
         self.cancel_event = threading.Event()
         self.auto_mode = settings.approval_mode == "auto"
@@ -271,8 +276,9 @@ class Agent:
         self._critical_ok: list[str] = []
         self._auto_count = 0
         from . import answers as answers_mod
-        for m in [m for m in self.history if m.get("role") == "user"][-4:]:
-            answers_mod.note_user_message(m.get("content") or "")
+        if self.note_user:
+            for m in [m for m in self.history if m.get("role") == "user"][-4:]:
+                answers_mod.note_user_message(m.get("content") or "")
         self._note_addresses(self.history)
 
     def _note_addresses(self, messages: list[dict]) -> None:
@@ -284,14 +290,15 @@ class Agent:
         for m in messages:
             content = m.get("content") or ""
             if m.get("role") == "user":
-                outbox.note_user_text(content, own)
+                if self.note_user or m.get("_user_words"):
+                    outbox.note_user_text(m.get("_user_words") or content, own)
             elif m.get("role") == "tool" and not content.startswith(("Email sent", "UNCONFIRMED", "NOT SENT", "ERROR: email")):
                 outbox.note_seen(content)
 
     # ---------- persistence ----------
     def _load(self) -> list[dict]:
         try:
-            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            data = json.loads((self.history_file or HISTORY_FILE).read_text(encoding="utf-8"))
             return data if isinstance(data, list) else []
         except (OSError, json.JSONDecodeError):
             return []
@@ -307,7 +314,9 @@ class Agent:
             slim.append(m)
         while slim and slim[0].get("role") != "user":  # never start with an orphaned tool result
             slim.pop(0)
-        HISTORY_FILE.write_text(json.dumps(slim, ensure_ascii=False), encoding="utf-8")
+        path = self.history_file or HISTORY_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(slim, ensure_ascii=False), encoding="utf-8")
 
     def reset(self) -> None:
         self.history = []
@@ -353,12 +362,16 @@ class Agent:
         return out
 
     # ---------- main loop ----------
-    async def run(self, user_text: str, emit: Emit, confirm: Confirm, ask: Ask | None = None) -> str:
+    async def run(self, user_text: str, emit: Emit, confirm: Confirm, ask: Ask | None = None,
+                  user_words: str | None = None) -> str:
+        """user_words: for a bot, the user's own words in its task (only those count as things the user said)."""
         self.ask = ask
         self.cancel_event.clear()
         self.busy = True
         kind = focus.classify(user_text, has_task=any(m.get("role") == "user" for m in self.history))
         user_msg = {"role": "user", "content": user_text, "_kind": kind}
+        if user_words and not self.note_user:
+            user_msg["_user_words"] = user_words
         if focus.wants_keep_going(user_text):
             user_msg["_keep_going"] = True
         self.history.append(user_msg)
@@ -369,7 +382,8 @@ class Agent:
         self._critical_ok: list[str] = []
         self._auto_count = 0
         from . import answers as answers_mod
-        answers_mod.note_user_message(user_text)
+        if self.note_user or user_words:
+            answers_mod.note_user_message(user_text if self.note_user else user_words)
         groups = registry.route_groups(user_text) | self.recent_groups | self._groups_from_history()
         used_groups: set[str] = set()
         loop = asyncio.get_running_loop()
@@ -395,7 +409,8 @@ class Agent:
             await asyncio.to_thread(jobs_tools.track_application, job.get("company", ""), job.get("title", ""),
                                     job.get("url", ""), "applied", "you applied yourself")
         # Only a job request (or a short "continue" right after a job run) carries on with the picked jobs.
-        self._queue_task = bool(apply_queue.pending()) and apply_queue.wanted_in(user_text)
+        # A bot has its own pick list (apply_queue.queue_file), so it carries on with its own picks, never the chat's.
+        self._queue_task = bool(apply_queue.pending()) and apply_queue.wanted_in(user_words if self.bot else user_text)
         self._budget = MAX_STEPS + (min(EXTRA_STEPS_CAP, STEPS_PER_JOB * len(apply_queue.pending())) if self._queue_task else 0)
         self._basics_asked = False
         if self._queue_task:
@@ -416,10 +431,12 @@ class Agent:
                     return await self._finish(emit, "Stopped.")
                 await emit({"type": "status", "text": "Thinking..." if step == 0 else f"Working (step {step + 1})..."})
                 block = focus.task_block(self._task_info, self.history, self._keep_going)
-                focus.CURRENT["block"] = block
+                focus.BLOCK.set(block)
+                if not self.bot:
+                    focus.CURRENT["block"] = block
                 messages = [{"role": "system", "content": self.system_prompt(), "_task_block": block}] + self.history
                 try:
-                    msg, provider = await asyncio.to_thread(self.llm.chat, messages, tools_for, trim_messages,
+                    msg, provider = await asyncio.to_thread(self._think, messages, tools_for, trim_messages,
                                                             notify, self.cancel_event, system_for)
                 except LLMError as exc:
                     if self.cancel_event.is_set():
@@ -505,8 +522,11 @@ class Agent:
             return await self._finish(emit, text)
         finally:
             self.busy = False
+            from . import desk, runctx
+            desk.DESK.release(runctx.current().id)     # a bot's hold on the browser ends with its run
             try:
-                apply_queue.note_run(self._queue_task)
+                if not self.bot:
+                    apply_queue.note_run(self._queue_task)
             except OSError:
                 pass
             self.save()
@@ -637,7 +657,7 @@ class Agent:
     async def _choose_jobs(self, call_id: str, args: dict) -> str:
         from .tools import jobs as jobs_mod
         try:
-            data = json.loads((jobs_mod.CACHE_DIR / "last_jobs.json").read_text(encoding="utf-8"))
+            data = json.loads(jobs_mod.last_jobs_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return "ERROR: run find_jobs first."
         ids = list(dict.fromkeys(str(i).upper() for i in (args.get("job_ids") or []) if str(i).upper() in data))
@@ -800,6 +820,31 @@ class Agent:
         return (f"Saved the login for {saved['site']} (username: {saved['username']}). "
                 "Use browser_type_secret to enter it; you will not see the password.")
 
+    def _doing(self) -> str:
+        """What this run is working on, in a few words (shown when another run waits for the browser)."""
+        if self.bot and self.bot.get("_task_now"):
+            return str(self.bot["_task_now"])[:160]
+        users = (self._task_info or {}).get("users") or []
+        return str((users[0].get("content") if users else "") or "")[:160]
+
+    def _tool(self, name: str, args: dict) -> str:
+        """Run a tool in a worker thread; AI calls inside it (resume tailoring, research summaries) use this lane."""
+        from . import llm as llm_mod
+        llm_mod.LANE.name = self.lane
+        try:
+            return registry.run_tool(name, args)
+        finally:
+            llm_mod.LANE.name = "main"
+
+    def _think(self, *args):
+        """One AI step, on this agent's lane (its own Kiro CLI process), in a worker thread."""
+        from . import llm as llm_mod
+        llm_mod.LANE.name = self.lane
+        try:
+            return self.llm.chat(*args)
+        finally:
+            llm_mod.LANE.name = "main"
+
     async def _run_call(self, call: dict, emit: Emit, confirm: Confirm) -> str:
         fn = call.get("function") or {}
         name = fn.get("name") or ""
@@ -818,6 +863,15 @@ class Agent:
             result = registry.run_tool(name, args)
             await emit({"type": "tool_result", "id": call["id"], "name": name, "ok": False, "preview": result[:500]})
             return result
+        from . import desk, runctx
+        if desk.needs_desk(name, tool.group, args):   # one run at a time uses the browser and the job list
+            blocked = await desk.DESK.acquire(runctx.current(), emit, doing=self._doing())
+            if blocked:
+                await emit({"type": "tool_call", "id": call["id"], "name": name, "args": args, "risk": SAFE,
+                            "summary": f"{name}: waiting for the browser"})
+                await emit({"type": "tool_result", "id": call["id"], "name": name, "ok": False, "preview": blocked})
+                log_action(name, args, SAFE, False, False, blocked)
+                return blocked
         level, summary = await asyncio.to_thread(tool.assess, args)
         await emit({"type": "tool_call", "id": call["id"], "name": name, "args": args, "risk": level, "summary": summary})
         if name == "request_credentials":
@@ -884,7 +938,7 @@ class Agent:
                 if extra:
                     result = "The user DENIED this Submit, so nothing was sent." + extra
         else:
-            result = await asyncio.to_thread(registry.run_tool, name, args)
+            result = await asyncio.to_thread(self._tool, name, args)
         from . import secrets_filter
         result = secrets_filter.scrub(result)
         ok = approved and not result.startswith("ERROR")
@@ -907,10 +961,17 @@ def _pretty(text: str) -> str:
     return text
 
 
+_LOG_LOCK = threading.Lock()   # the chat and bots write the log at the same time
+
+
 def log_action(name: str, args: dict, level: str, asked: bool, approved: bool, result: str, auto: bool = False) -> None:
     safe_args = {k: ("***" if "password" in k.lower() or "token" in k.lower() else v) for k, v in args.items()}
     record = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "tool": name, "risk": level, "asked": asked,
               "approved": approved, "auto": auto, "args": safe_args, "result": result[:400]}
+    from . import runctx
+    run = runctx.current()
+    if run.is_bot:
+        record["bot"] = run.bot
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOG_DIR / "actions.jsonl", "a", encoding="utf-8") as fh:
+    with _LOG_LOCK, open(LOG_DIR / "actions.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")

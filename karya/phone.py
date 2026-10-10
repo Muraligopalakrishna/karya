@@ -1,9 +1,10 @@
 """Tasks from your phone, and Karya's approvals, questions and reports there (WhatsApp; see whatsapp.py).
 
-A message you send yourself on WhatsApp becomes a Karya task (queued if Karya is busy). While a task from the phone, or
-a background agent's run, waits for an approval or an answer, the question comes to WhatsApp too: reply YES / NO, the
-numbers of the jobs to apply to, or your answers. Logins and passwords never go over WhatsApp: those stay on the PC.
-STATUS, STOP and HELP are understood as commands."""
+A message you send yourself on WhatsApp becomes a Karya task (queued if the chat is busy). "@Maya find PM jobs" (or
+"Maya: ...") gives the task to that bot instead. While a task from the phone, or any bot, waits for an approval or an
+answer, the question comes to WhatsApp too, one at a time, with the bot's name: reply YES / NO, the numbers of the
+jobs to apply to, or your answers. Logins and passwords never go over WhatsApp: those stay on the PC. STATUS, STOP,
+STOP <bot>, BOTS and HELP are understood as commands."""
 from __future__ import annotations
 
 import asyncio
@@ -16,8 +17,10 @@ from .registry import CONFIRM, P, tool
 CHANNEL: "PhoneChannel | None" = None
 _YES = re.compile(r"^\W*(y|yes|yeah|yep|yup|ok|okay|approve[d]?|go( ahead)?|do it|sure|haan?|ha|han|ji)\b", re.I)
 _NO = re.compile(r"^\W*(n|no|nope|deny|denied|don'?t|do not|cancel|nahi|nah|na)\b", re.I)
-HELP = ("Send me any task, e.g. \"find PM jobs in Dubai and apply\", \"what's the gold sentiment\", \"every morning at 9 "
-        "find new jobs\". Commands: STATUS (what I'm doing), STOP (stop the current task), AGENTS (my background agents).")
+_BARE = re.compile(r"^\W*(y|yes|yeah|yep|ok|okay|approve[d]?|sure|n|no|nope|deny|nahi|na)\W*$", re.I)
+HELP = ("Send me any task, e.g. \"find PM jobs in Dubai and apply\" or \"what's the gold sentiment\". Give a task to "
+        "one of your bots with \"@Name task\" (e.g. \"@Maya apply to 3 new PM jobs\"). Commands: STATUS (what's "
+        "running), STOP (stop the chat's task), STOP Name (stop a bot), BOTS (your bots).")
 
 
 def owner_number() -> str:
@@ -34,8 +37,7 @@ class PhoneChannel:
     def __init__(self, hub, loop):
         self.hub, self.loop = hub, loop
         self.bridge = None
-        self.waiting_confirm: str | None = None
-        self.waiting_ask: dict | None = None
+        self.waiting: list[dict] = []    # approvals and questions sent here, oldest first (answered in that order)
 
     # ----- linking
     def enable(self, wait: float = 25.0) -> dict:
@@ -80,77 +82,114 @@ class PhoneChannel:
     def _incoming(self, text: str) -> None:          # from the WhatsApp thread
         asyncio.run_coroutine_threadsafe(self.on_message(text), self.loop)
 
-    # ----- Karya -> phone (hub listener; only for tasks from the phone or a background agent)
-    def _routed(self) -> bool:
-        return getattr(self.hub, "source", "chat") != "chat"
+    # ----- Karya -> phone (hub listener: bots always, the chat's own run only for tasks from the phone)
+    def _routed(self, request: dict) -> bool:
+        if request.get("bot"):
+            return True
+        return str(request.get("source") or getattr(self.hub, "source", "chat")) != "chat"
 
-    async def on_confirm(self, request: dict) -> None:
-        if not self._routed():
-            return
-        self.waiting_confirm = request.get("id")
-        self.say(f"Approve this?\n{str(request.get('summary') or 'an action')[:900]}\n\nReply YES or NO.")
-
-    async def on_ask(self, request: dict) -> None:
-        if not self._routed():
-            return
-        kind = request.get("kind")
-        if kind == "jobs":
-            rows = (request.get("jobs") or [])[:15]
-            self.waiting_ask = {**request, "_rows": rows}
+    def _prompt(self, entry: dict) -> None:
+        request = entry["request"]
+        who = f"{request['bot']} asks: " if request.get("bot") else ""
+        more = len(self.waiting) - 1
+        tail = f"\n({more} more waiting after this one.)" if more > 0 else ""
+        entry["prompted"] = True
+        if entry["kind"] == "confirm":
+            self.say(f"{who}Approve this?\n{str(request.get('summary') or 'an action')[:900]}\n\nReply YES or NO.{tail}")
+        elif request.get("kind") == "jobs":
+            rows = entry["rows"]
             lines = [f"{n}. {r.get('title', '')[:70]} - {r.get('company', '')} ({r.get('location') or '?'}), "
                      f"{r.get('match', '?')}%" for n, r in enumerate(rows, 1)]
-            self.say("Which jobs should I apply to? Reply with numbers (e.g. 1 3 5), ALL or NONE.\n" + "\n".join(lines))
-        elif kind == "questions":
+            self.say(f"{who}Which jobs should I apply to? Reply with numbers (e.g. 1 3 5), ALL or NONE.\n"
+                     + "\n".join(lines) + tail)
+        else:
             qs = request.get("questions") or []
-            self.waiting_ask = request
             lines = [f"{n}. {q.get('q', '')}" + (f" (e.g. {q.get('hint') or (q.get('options') or [''])[0]})"
                                                    if q.get("hint") or q.get("options") else "")
                      for n, q in enumerate(qs, 1)]
-            self.say(("Karya needs your answer:\n" if len(qs) == 1 else
-                      "Karya needs your answers, one line each, in this order:\n") + "\n".join(lines))
+            self.say(who + ("I need your answer:\n" if len(qs) == 1 else
+                            "I need your answers, one line each, in this order:\n") + "\n".join(lines) + tail)
+
+    def _add(self, entry: dict) -> None:
+        self.waiting.append(entry)
+        if len(self.waiting) == 1:
+            self._prompt(entry)
+
+    def _resolved(self, request_id: str, elsewhere: bool) -> None:
+        first = self.waiting[0] if self.waiting else None
+        self.waiting = [e for e in self.waiting if e["request"].get("id") != request_id]
+        if first is not None and first["request"].get("id") == request_id:
+            if elsewhere and first.get("prompted"):
+                self.say("(That one was answered on the PC.)")
+            if self.waiting and not self.waiting[0].get("prompted"):
+                self._prompt(self.waiting[0])
+
+    async def on_confirm(self, request: dict) -> None:
+        if self._routed(request):
+            self._add({"kind": "confirm", "request": request})
+
+    async def on_ask(self, request: dict) -> None:
+        if not self._routed(request):
+            return
+        kind = request.get("kind")
+        if kind in ("jobs", "questions"):
+            self._add({"kind": "ask", "request": request, "rows": (request.get("jobs") or [])[:15]})
         else:                                        # a login or anything secret: on the PC only
-            self.say("Karya needs a login (or something private) for this task. Please answer it in Karya's window on "
-                     "your PC; passwords never go over WhatsApp.")
+            who = request.get("bot") or "Karya"
+            self.say(f"{who} needs a login (or something private) for this task. Please answer it in Karya's window "
+                     "on your PC; passwords never go over WhatsApp.")
+
+    async def on_confirm_done(self, request_id: str, approved: bool) -> None:
+        self._resolved(request_id, elsewhere=True)
+
+    async def on_ask_done(self, request_id: str, answered: bool) -> None:
+        self._resolved(request_id, elsewhere=True)
 
     async def on_done(self, source: str, text: str, final: str) -> None:
-        self.waiting_confirm = self.waiting_ask = None
+        self.waiting = [e for e in self.waiting if e["request"].get("bot")]   # the chat's run is over
         if source == "chat":
             return
-        report = str(final or "Done.").strip()
-        if source.startswith("agent:"):
-            from . import scheduler
-            agent = next((a for a in scheduler.load() if a["id"] == source.split(":", 1)[1]), None)
-            report = f"Agent \"{(agent or {}).get('name', 'background')}\":\n{report}"
-        self.say(report[:3400])
+        self.say(str(final or "Done.").strip()[:3400])
+
+    async def on_bot_done(self, record: dict, task: str, report: str, source: str) -> None:
+        self.waiting = [e for e in self.waiting if e["request"].get("bot") != record.get("name")]
+        self.say(f"{record.get('name', 'Your bot')}: {str(report or 'Done.').strip()}"[:3400])
 
     # ----- phone -> Karya
     async def on_message(self, text: str) -> None:
         text = str(text or "").strip()
         low = text.lower()
         hub = self.hub
-        if self.waiting_confirm and self.waiting_confirm in hub.pending and (_YES.match(low) or _NO.match(low)):
+        self.waiting = [e for e in self.waiting
+                        if e["request"].get("id") in (hub.pending if e["kind"] == "confirm" else hub.asks)]
+        first = self.waiting[0] if self.waiting else None
+        if first and first["kind"] == "confirm" and (_YES.match(low) or _NO.match(low)):
             approved = bool(_YES.match(low)) and not _NO.match(low)
-            hub.answer(self.waiting_confirm, approved)
-            self.waiting_confirm = None
-            self.say("Approved, going ahead." if approved else "OK, not doing that.")
+            self.waiting.pop(0)
+            hub.answer(first["request"]["id"], approved)
+            who = first["request"].get("bot")
+            self.say(("Approved" if approved else "OK, not doing that") + (f" ({who})." if who else "."))
+            if self.waiting:
+                self._prompt(self.waiting[0])
             return
-        if self.waiting_ask and self.waiting_ask.get("id") in hub.asks and low not in ("stop", "cancel"):
-            data = self._answer(text)
+        if first and first["kind"] == "ask" and not re.match(r"^\W*(stop|cancel)\b", low):
+            data = self._answer(first, text)
             if data is None:
-                self.say("Reply with numbers like 1 3 5, ALL or NONE." if self.waiting_ask.get("kind") == "jobs"
+                self.say("Reply with numbers like 1 3 5, ALL or NONE." if first["request"].get("kind") == "jobs"
                          else "Please send the answers, one line each.")
                 return
-            hub.answer_ask(self.waiting_ask["id"], data)
-            self.waiting_ask = None
+            self.waiting.pop(0)
+            hub.answer_ask(first["request"]["id"], data)
             self.say("Got it.")
+            if self.waiting:
+                self._prompt(self.waiting[0])
             return
-        if low in ("stop", "cancel", "stop it"):
-            if hub.busy_now():
-                hub.agent.cancel()
-                hub.deny_all()
-                self.say("Stopped.")
-            else:
-                self.say("Nothing is running.")
+        if _BARE.match(low):                         # a YES/NO with nothing waiting is never a new task
+            self.say("Nothing is waiting for your OK right now.")
+            return
+        stop = re.match(r"^\W*(stop|cancel)\W*(.*)$", low)
+        if stop:
+            await self._stop(stop.group(2).strip(" .!"))
             return
         if low in ("status", "?", "what are you doing", "what are you doing?"):
             self.say(self._status_text())
@@ -158,19 +197,53 @@ class PhoneChannel:
         if low in ("help", "hi", "hello", "hey"):
             self.say(HELP)
             return
-        if low in ("agents", "my agents"):
+        if low in ("agents", "my agents", "bots", "my bots"):
             from . import scheduler
-            rows = [f"- {a['name']}: {scheduler.describe(a)}{'' if a.get('enabled') else ' (paused)'}" for a in scheduler.load()]
-            self.say("Background agents:\n" + "\n".join(rows) if rows else "No background agents yet.")
+            rows = [f"- {a['name']}: {a['task'][:80]} ({scheduler.describe(a)}"
+                    f"{'' if a.get('enabled') else ', paused'}{', working now' if hub.bot_running(a['id']) else ''})"
+                    for a in scheduler.load()]
+            self.say("Your bots:\n" + "\n".join(rows) if rows else "No bots yet. Ask me to make one, e.g. \"make a bot "
+                                                                    "called Maya that finds and applies to PM jobs\".")
+            return
+        from . import scheduler
+        target = scheduler.addressed(text)
+        if target:
+            bot, task = target
+            state = await hub.assign(bot["id"], task, source="assigned", user_words=task)
+            self.say(f"{bot['name']} is on it. I'll message you here when it's done." if state == "started" else
+                     f"{bot['name']} has it queued: it finishes its current work first.")
             return
         result = await hub.submit(text, source="phone", label="WhatsApp")
         self.say("On it. I'll message you here when it's done." if result == "started" else
                  f"Queued: I'm finishing another task first ({len(hub.queue)} waiting).")
 
-    def _answer(self, text: str) -> dict | None:
-        ask = self.waiting_ask or {}
+    async def _stop(self, name: str) -> None:
+        hub = self.hub
+        if name and name not in ("it", "all", "that", "this", "everything"):
+            from . import scheduler
+            bot = scheduler.find(name)
+            if bot is None:
+                self.say(f"I don't have a bot called {name!r}. Send BOTS to see them.")
+            else:
+                self.say(f"Stopped {bot['name']}." if hub.stop_bot(bot["id"]) else f"{bot['name']} isn't working on anything.")
+            return
+        stopped = []
+        if hub.busy_now():
+            hub.agent.cancel()
+            hub.deny_all()
+            stopped.append("the chat's task")
+        if name in ("all", "everything"):
+            for agent_id in list(hub.bots):
+                hub.stop_bot(agent_id)
+                stopped.append("your bots")
+        self.say(("Stopped " + " and ".join(dict.fromkeys(stopped)) + ".") if stopped else
+                 ("Nothing is running in the chat." + (" (Bots are working: send STOP ALL or STOP <name>.)" if hub.bots else "")))
+
+    @staticmethod
+    def _answer(entry: dict, text: str) -> dict | None:
+        ask = entry["request"]
         if ask.get("kind") == "jobs":
-            rows = ask.get("_rows") or []
+            rows = entry.get("rows") or []
             low = text.lower()
             if re.match(r"^\W*(all|every|sab)\b", low):
                 return {"picked": [r["id"] for r in rows], "skip_companies": []}
@@ -190,10 +263,15 @@ class PhoneChannel:
     def _status_text(self) -> str:
         hub = self.hub
         from . import scheduler
-        lines = [f"Working on a task from {getattr(hub, 'label', 'the chat')}." if hub.busy_now() else "Free right now."]
+        lines = [f"Chat: working on a task from {getattr(hub, 'label', 'the chat')}." if hub.busy_now() else "Chat: free."]
         if hub.queue:
-            lines.append(f"{len(hub.queue)} task(s) waiting.")
-        upcoming = sorted((a for a in scheduler.load() if a.get("enabled")), key=lambda a: a.get("next_run") or 0)[:3]
+            lines.append(f"{len(hub.queue)} task(s) waiting for the chat.")
+        for row in hub.bots_running():
+            lines.append(f"{row['bot']}: working on \"{row['task'][:100]}\"")
+        if self.waiting:
+            lines.append(f"{len(self.waiting)} thing(s) waiting for your answer here.")
+        upcoming = sorted((a for a in scheduler.load() if a.get("enabled") and a.get("next_run")),
+                          key=lambda a: a["next_run"])[:3]
         for a in upcoming:
             lines.append(f"Next: {a['name']} at {time.strftime('%a %H:%M', time.localtime(a['next_run']))}")
         return "\n".join(lines)
@@ -208,7 +286,7 @@ def _need_channel() -> str | None:
 
 @tool("connect_whatsapp", "Link the user's WhatsApp so they can give Karya tasks from their phone: they write in their "
       "own 'Message yourself' chat; Karya replies there, asks there for approvals and sends background agents' "
-      "reports there. Opens WhatsApp Web in a window of its own; the first time, the user scans the code with "
+      "reports there (bots' too). Opens WhatsApp Web in a window of its own; the first time, the user scans the code with "
       "WhatsApp > Linked devices > Link a device. Only that one chat is ever read.", group="agents")
 def connect_whatsapp():
     problem = _need_channel()

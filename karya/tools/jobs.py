@@ -560,7 +560,7 @@ def picked_only(args) -> str | None:
     if re.search(rf"\b{re.escape(job_id)}\b", " ".join(answers.RECENT_USER[-2:]).upper()):
         return None                       # the user named it
     try:                                  # a search newer than the pick list: its jobs can be looked at before picking
-        if (CACHE_DIR / "last_jobs.json").stat().st_mtime > time.time() - apply_queue.age_seconds():
+        if (last_jobs_file()).stat().st_mtime > time.time() - apply_queue.age_seconds():
             return None
     except OSError:
         pass
@@ -847,10 +847,17 @@ def job_row(match: int, job: dict, why: list[str]) -> dict:
     return {k: v for k, v in row.items() if v not in (None, "", [])}
 
 
+def last_jobs_file():
+    """The chat's job shortlist (J1, J2...), or a bot's own."""
+    from ..runctx import current
+    run = current()
+    return CACHE_DIR / (f"last_jobs.{run.agent_id}.json" if run.is_bot else "last_jobs.json")
+
+
 def remember_jobs(rows: list[dict], ranked: list) -> None:
     """Give each shown job a short id (J1, J2...) and keep its full details, so later steps use the id, not a URL.
     Several searches in a row (e.g. LinkedIn, then company sites) build ONE shortlist; ids keep counting."""
-    path = CACHE_DIR / "last_jobs.json"
+    path = last_jobs_file()
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
         if time.time() - path.stat().st_mtime > 30 * 60:
@@ -881,7 +888,7 @@ def remember_jobs(rows: list[dict], ranked: list) -> None:
 def cached_jobs() -> dict:
     """The shortlist from the latest find_jobs (id -> job)."""
     try:
-        data = json.loads((CACHE_DIR / "last_jobs.json").read_text(encoding="utf-8"))
+        data = json.loads((last_jobs_file()).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -890,7 +897,7 @@ def cached_jobs() -> dict:
 def job_by_id(job_id: str) -> dict | None:
     key = str(job_id).strip().upper()
     try:
-        data = json.loads((CACHE_DIR / "last_jobs.json").read_text(encoding="utf-8"))
+        data = json.loads((last_jobs_file()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     if key in data:

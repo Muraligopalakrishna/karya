@@ -50,6 +50,9 @@ def test_setup_panel_and_login_card(tmp_path, monkeypatch):
     llm = FakeLLM([tool_call("request_credentials", {"site": "linkedin.com", "reason": "to use Easy Apply"}),
                    reply("Logged in and ready.")])
     app = create_app(agent=Agent(llm=llm, persist=False), token="ui-token", port=port)
+    app.state.hub.make_bot = lambda record: Agent(        # a bot with its own scripted AI
+        llm=FakeLLM([reply("Found 3 PM jobs in Pune: Acme, Globex, Initech.\nRemember: covered Acme")]),
+        persist=False, bot=record)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()
     for _ in range(100):
@@ -98,9 +101,22 @@ def test_setup_panel_and_login_card(tmp_path, monkeypatch):
             page.click(".choose-service button:has-text('DeepSeek')")
             page.wait_for_selector(".connect-box .form-msg:has-text('DeepSeek connected')", timeout=10000)
 
-            # phone and background agents
+            # phone and bots
             assert "Not linked yet." in page.inner_text(".phone-box .phone-state")
-            assert "No agents yet." in page.inner_text(".agents-box")
+            assert "No bots yet." in page.inner_text(".agents-box")
+            page.fill("[aria-label='Bot name']", "Maya")
+            page.fill("[aria-label='What the bot does']", "find product manager jobs in India and apply")
+            page.click(".make-bot button[type=submit]")
+            page.wait_for_selector(".agent-list li:has-text('Maya')", timeout=10000)
+            assert "works when you give it a task" in page.inner_text(".agent-list")
+            # "@Maya ..." in the chat goes straight to the bot; its card and report show up, the chat stays free
+            page.fill("#input", "@Maya find PM jobs in Pune")
+            page.keyboard.press("Enter")
+            page.wait_for_selector(".msg.assistant:has-text('Maya is on it')", timeout=10000)
+            page.wait_for_selector(".bot-report:has-text('Found 3 PM jobs in Pune')", timeout=15000)
+            assert "from Maya" in page.inner_text(".bot-report")
+            assert "Maya finished" in page.inner_text(".bot-card")
+            assert page.is_enabled("#send-btn")
 
             # one click adds Karya to an installed AI app
             page.wait_for_selector(".mcp-apps li:has-text('Cursor') button", timeout=10000)
