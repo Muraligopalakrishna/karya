@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="578" viewBox="0 0 900 578" role="img" aria-label="Comparison of Karya, Meta Muse, OpenAI Dots and Grok Bot">
+  <style>
+    text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #e7ecf3; }
+    .title { font-size: 22px; font-weight: 700; }
+    .sub { font-size: 13px; fill: #9aa6b8; }
+    .head { font-size: 14px; font-weight: 700; text-anchor: middle; }
+    .label { font-size: 13.5px; fill: #c9d2de; }
+    .cell { font-size: 12.5px; text-anchor: middle; }
+    .yes { fill: #3fb950; } .no { fill: #f85149; } .warn { fill: #d29922; }
+    .sep { stroke: #263046; stroke-width: 1; }
+    .foot { font-size: 11.5px; fill: #9aa6b8; }
+  </style>
+  <rect x="0.5" y="0.5" width="899" height="577" rx="16" fill="#0f1522" stroke="#263046"/>
+  <text class="title" x="32" y="46">How Karya compares</text>
+  <text class="sub" x="32" y="70">From each company's published information, October 2026.</text>
+
+  <rect x="292" y="84" width="150" height="452" rx="10" fill="#4f8cff" fill-opacity="0.08" stroke="#4f8cff" stroke-opacity="0.45"/>
+  <text class="head" x="367" y="110">Karya</text>
+  <text class="head" x="519" y="110">Meta Muse</text>
+  <text class="head" x="671" y="110">OpenAI Dots</text>
+  <text class="head" x="823" y="110">Grok Bot</text>
+  <line class="sep" x1="24" y1="124" x2="876" y2="124"/>
+
+  <text class="label" x="32" y="152">Price to start</text>
+  <text class="cell yes" x="367" y="152">Free</text>
+  <text class="cell" x="519" y="152">Free tier</text>
+  <text class="cell" x="671" y="152">$100 / month</text>
+  <text class="cell" x="823" y="152">$20 / month</text>
+  <line class="sep" x1="24" y1="170" x2="876" y2="170"/>
+
+  <text class="label" x="32" y="198">Where it runs</text>
+  <text class="cell" x="367" y="198">Your PC</text>
+  <text class="cell" x="519" y="198">Meta's cloud</text>
+  <text class="cell" x="671" y="198">OpenAI's cloud</text>
+  <text class="cell" x="823" y="198">xAI's cloud</text>
+  <line class="sep" x1="24" y1="216" x2="876" y2="216"/>
+
+  <text class="label" x="32" y="244">Keeps working when your PC is off</text>
+  <text class="cell warn" x="367" y="244">No</text>
+  <text class="cell yes" x="519" y="244">Yes</text>
+  <text class="cell yes" x="671" y="244">Yes</text>
+  <text class="cell yes" x="823" y="244">Yes</text>
+  <line class="sep" x1="24" y1="262" x2="876" y2="262"/>
+
+  <text class="label" x="32" y="290">Your logins and files stay on your PC</text>
+  <text class="cell yes" x="367" y="290">Yes</text>
+  <text class="cell no" x="519" y="290">No</text>
+  <text class="cell no" x="671" y="290">No</text>
+  <text class="cell no" x="823" y="290">No</text>
+  <line class="sep" x1="24" y1="308" x2="876" y2="308"/>
+
+  <text class="label" x="32" y="336">Open source</text>
+  <text class="cell yes" x="367" y="336">Yes (MIT)</text>
+  <text class="cell no" x="519" y="336">No</text>
+  <text class="cell no" x="671" y="336">No</text>
+  <text class="cell no" x="823" y="336">No</text>
+  <line class="sep" x1="24" y1="354" x2="876" y2="354"/>
+
+  <text class="label" x="32" y="382">AI model</text>
+  <text class="cell yes" x="367" y="382">Any you choose</text>
+  <text class="cell" x="519" y="382">Muse Spark</text>
+  <text class="cell" x="671" y="382">GPT-6 Astra</text>
+  <text class="cell" x="823" y="382">Not published</text>
+  <line class="sep" x1="24" y1="400" x2="876" y2="400"/>
+
+  <text class="label" x="32" y="428">Give it tasks from</text>
+  <text class="cell" x="367" y="420">Its chat, WhatsApp,</text>
+  <text class="cell" x="367" y="437">your AI apps</text>
+  <text class="cell" x="519" y="428">Muse app, WhatsApp</text>
+  <text class="cell" x="671" y="420">ChatGPT, Slack,</text>
+  <text class="cell" x="671" y="437">Teams, voice</text>
+  <text class="cell" x="823" y="428">Grok Bot app</text>
+  <line class="sep" x1="24" y1="450" x2="876" y2="450"/>
+
+  <text class="label" x="32" y="478">Named bots working in the background</text>
+  <text class="cell yes" x="367" y="478">Yes</text>
+  <text class="cell" x="519" y="478">One agent</text>
+  <text class="cell yes" x="671" y="478">Yes</text>
+  <text class="cell yes" x="823" y="478">Yes</text>
+  <line class="sep" x1="24" y1="496" x2="876" y2="496"/>
+
+  <text class="label" x="32" y="524">Where you can use it</text>
+  <text class="cell yes" x="367" y="524">Any country</text>
+  <text class="cell" x="519" y="524">US and Canada</text>
+  <text class="cell" x="671" y="524">Eligible markets</text>
+  <text class="cell" x="823" y="524">Not listed (beta)</text>
+
+  <text class="foot" x="32" y="562">Sources: Meta, OpenAI and xAI launch posts and docs, Cursor pricing (Aug to Oct 2026). Karya needs your PC on and Karya running.</text>
+</svg>

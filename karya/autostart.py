@@ -40,9 +40,27 @@ def _powershell(script: str, **env) -> subprocess.CompletedProcess:
                           env={**os.environ, **env}, capture_output=True, timeout=60, creationflags=_NO_WINDOW)
 
 
-def status() -> dict:
+_TARGET: dict = {"key": None, "target": ""}
+
+
+def _target() -> str:
+    """Where the startup shortcut points (read once per change of the file: reading it takes PowerShell)."""
+    path = shortcut_path()
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return ""
+    if _TARGET["key"] != key:
+        _TARGET.update(key=key, target=str(read_shortcut().get("target") or ""))
+    return _TARGET["target"]
+
+
+def status(root: Path = ROOT) -> dict:
+    """on: Windows starts THIS copy of Karya (a shortcut to another folder's Karya doesn't count)."""
     supported = sys.platform == "win32"
-    return {"supported": supported, "on": supported and shortcut_path().exists()}
+    if not supported or not shortcut_path().exists():
+        return {"supported": supported, "on": False}
+    return {"supported": True, "on": _target().lower() == str(Path(root) / "start.bat").lower()}
 
 
 def read_shortcut() -> dict:
@@ -69,7 +87,8 @@ def enable(root: Path = ROOT) -> dict:
     if r.returncode != 0 or not shortcut_path().exists():
         lines = (r.stderr or r.stdout).decode("utf-8", "replace").strip().splitlines()
         raise ValueError("Windows didn't make the startup shortcut" + (f": {lines[-1][:200]}" if lines else "."))
-    return status()
+    _TARGET["key"] = None
+    return status(root)
 
 
 def disable() -> dict:

@@ -444,7 +444,7 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                 "running": hub.label if hub.busy_now() else None, "queued": len(hub.queue),
                 "whatsapp": phone.CHANNEL.status() if phone.CHANNEL else {"state": "off", "detail": ""},
                 "agents": [scheduler._row(a) for a in scheduler.load()], "bots_running": hub.bots_running(),
-                "keep_awake": settings.keep_awake, "autostart": autostart.status(),
+                "keep_awake": settings.keep_awake, "autostart": autostart.status(), **_readiness(),
                 "browser_link": link.status(), "extension_dir": str(EXTENSION_DIR), "browser_mode": settings.browser_mode,
                 "checks": {k: {f: v.get(f) for f in ("ok", "model", "plan", "tokens_per_minute", "summary", "error")}
                            for k, v in checks.items() if k in {p.name for p in settings.providers}}}
@@ -493,16 +493,32 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
     def refresh_ai() -> None:
         from .llm import LLMClient
         app.state.hub.set_llm(LLMClient(settings.providers))  # the chat and the bots use it from the next step on
+        from . import onboarding
+        onboarding.import_if_waiting()                        # a resume given before any AI was connected
 
     async def check(name: str) -> list[dict]:
         return await asyncio.to_thread(_check_providers, app.state.hub.agent.llm, {name})
 
+    async def keep_if_it_answers(name: str, label: str, before: dict) -> list[dict]:
+        """An app that's signed in on the PC can still be refused by its service (no plan, no model access): then
+        Karya puts its settings back as they were, instead of putting an AI that can't answer first in line."""
+        from .config import update_env
+        checks = await check(name)
+        if checks and not any(c.get("ok") for c in checks):
+            await asyncio.to_thread(update_env, before)
+            refresh_ai()
+            why = str(checks[0].get("error") or "it gave no answer")[:240]
+            raise ValueError(f"{label} is signed in on this PC, but it couldn't answer for Karya: {why} "
+                             "Karya didn't add it. Check that app's plan or model, then try again.")
+        return checks
+
     @app.get("/api/ai")
-    async def ai_overview(request: Request, token: str = ""):
+    async def ai_overview(request: Request, token: str = "", logins: int = 1):
+        """What's connected; with logins=1 (default) also the Kiro, Claude, ChatGPT and offline-AI states."""
         if not allowed(request, token):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         from . import connect
-        return await asyncio.to_thread(connect.overview)
+        return await asyncio.to_thread(connect.overview, bool(logins))
 
     @app.post("/api/ai")
     async def ai_action(request: Request, token: str = ""):
@@ -542,10 +558,26 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             elif action == "login_cancel":
                 connect.cancel_login(name)
                 out = {"state": "idle"}
-            elif action == "use_codex":
-                out = connect.use_codex()
+            elif action in ("use_codex", "use_claude"):
+                from .config import _env
+                flag = "CODEX_ENABLED" if action == "use_codex" else "CLAUDE_ENABLED"
+                before = {flag: _env(flag, ""), "LLM_PROVIDERS": _env("LLM_PROVIDERS", "")}
+                out = await asyncio.to_thread(connect.use_codex if action == "use_codex" else connect.use_claude)
                 refresh_ai()
-                out["checks"] = await check("codex")
+                name = "codex" if action == "use_codex" else "claude"
+                out["checks"] = await keep_if_it_answers(name, "ChatGPT (Codex)" if name == "codex" else "Claude Code",
+                                                         before)
+            elif action == "ollama_download":
+                from . import local_ai
+                out = await asyncio.to_thread(local_ai.download)
+            elif action == "ollama_status":
+                from . import local_ai
+                out = await asyncio.to_thread(local_ai.status)
+                if out.get("download", {}).get("state") == "done":
+                    refresh_ai()
+            elif action == "use_ollama":
+                out = await asyncio.to_thread(connect.use_ollama)
+                refresh_ai()
             else:
                 return JSONResponse({"error": f"unknown action {action!r}"}, status_code=400)
         except ValueError as exc:
@@ -594,6 +626,35 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             data.setdefault("profile", {})["whatsapp"] = "+" + number
             memory_store.save(data)
         return await asyncio.to_thread(phone.CHANNEL.enable, 20.0)
+
+    @app.get("/api/onboarding")
+    async def onboarding_state(request: Request, token: str = ""):
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import onboarding
+        return await asyncio.to_thread(onboarding.state)
+
+    @app.post("/api/onboarding")
+    async def onboarding_action(request: Request, token: str = ""):
+        """The first-run guide: save the user's details or resume, finish, skip, or show it again."""
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import onboarding
+        try:
+            body = dict(await request.json())
+            action = str(body.get("action", ""))
+            if action == "profile":
+                return await asyncio.to_thread(onboarding.save_profile, dict(body.get("profile") or {}))
+            if action == "resume":
+                return await asyncio.to_thread(onboarding.save_resume, str(body.get("filename", "")),
+                                               str(body.get("data", "")))
+            if action in ("done", "skip"):
+                return await asyncio.to_thread(onboarding.finish, action == "skip")
+            if action == "reset":
+                return await asyncio.to_thread(onboarding.reset)
+        except (ValueError, TypeError, OSError) as exc:
+            return JSONResponse({"error": str(exc)[:300]}, status_code=400)
+        return JSONResponse({"error": "unknown action"}, status_code=400)
 
     @app.post("/api/autostart")
     async def autostart_action(request: Request, token: str = ""):
@@ -823,6 +884,27 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             await hub.send({"type": "browser_link", **link.status()})
 
     return app
+
+
+def _env_flag(name: str) -> bool:
+    from .config import _env
+    return _env(name, "").lower() in ("1", "true", "yes", "skipped")
+
+
+def _readiness() -> dict:
+    """What the page needs to know to guide the user: is there an AI Karya can really use (the offline model counts
+    only once it's downloaded), what Karya knows about them, and whether to show the first-run guide (people who
+    were already set up before the guide existed don't get it)."""
+    from . import local_ai
+    from .memory import memory_store
+    from .tools import resume as resume_tools
+    names = [p.name for p in settings.providers]
+    offline = "ollama" in names and bool(local_ai.status(cached=True).get("ready"))
+    ai_ready = any(n != "ollama" for n in names) or offline
+    profile = memory_store.load().get("profile", {})
+    you = {"name": bool(profile.get("name")), "resume": bool(resume_tools.load_master()) or settings.resume_path.exists()}
+    return {"ai_ready": ai_ready, "you": you,
+            "onboarded": _env_flag("KARYA_ONBOARDED") or (ai_ready and you["name"])}
 
 
 def _check_providers(llm, names: set[str]) -> list[dict]:

@@ -51,8 +51,9 @@ def server():
     thread.join(timeout=5)
 
 
-def test_chat_page_end_to_end(server):
+def test_chat_page_end_to_end(server, monkeypatch):
     port, agent = server
+    monkeypatch.setenv("KARYA_ONBOARDED", "true")              # set up already: no welcome guide
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page()
@@ -61,8 +62,12 @@ def test_chat_page_end_to_end(server):
         page.goto(f"http://127.0.0.1:{port}/?token=ui-test-token")
         page.wait_for_selector("#conn-dot.on", timeout=15000)
         assert page.url == f"http://127.0.0.1:{port}/"          # token removed from the address bar
-        assert page.locator(".chip").count() == 6
-        assert "brain:" in page.inner_text("#provider-label")
+        assert page.locator(".idea").count() == 6
+        page.wait_for_function("() => document.getElementById('provider-label').textContent !== 'connecting...'", timeout=10000)
+        assert page.inner_text("#provider-label").startswith("AI: ")
+        page.click(".idea:has-text('Jobs')")                    # an idea fills the box, ready to send or edit
+        assert page.input_value("#input").startswith("Find product manager jobs")
+        page.fill("#input", "")
 
         # the markdown renderer must never produce live HTML from model/web text
         results = page.evaluate("""(cases) => {

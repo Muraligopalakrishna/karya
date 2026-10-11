@@ -68,8 +68,8 @@ def test_order_first_and_new_ones_are_never_dropped(env):
     assert names() == ["groq", "openrouter"] and "GEMINI_API_KEY=\n" in env.read_text(encoding="utf-8")
     with pytest.raises(ValueError):
         connect.use_first("gemini")
-    with pytest.raises(ValueError):
-        connect.remove("ollama")
+    connect.remove("ollama")                                             # the offline AI can be turned off too
+    assert "OLLAMA_ENABLED=false" in env.read_text(encoding="utf-8")
 
 
 def test_pick_a_model(env, monkeypatch):

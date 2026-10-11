@@ -6,10 +6,11 @@ from __future__ import annotations
 import re
 import time
 
-from .config import CODEX_TITLE, PRESET_BY_NAME, PRESETS, _env, detect_key, provider_order, settings, update_env
+from .config import (CLAUDE_TITLE, CODEX_TITLE, PRESET_BY_NAME, PRESETS, _env, detect_key, provider_order, settings,
+                     update_env)
 
 _NOT_CHAT = re.compile(r"embed|tts|whisper|dall-?e|moderation|rerank|guard|audio|image|transcri|realtime|search|"
-                       r"speech|vision-preview|davinci|babbage|\bocr\b|sora|veo|imagen|lyria", re.I)
+                       r"speech|vision-preview|davinci|babbage|\bocr\b|sora|veo|imagen|lyria|orpheus|playai", re.I)
 _MODEL_OK = re.compile(r"^[\w.:/@+\-]{1,120}$")
 _MODELS: dict[str, tuple[float, list[dict]]] = {}
 
@@ -17,6 +18,8 @@ _MODELS: dict[str, tuple[float, list[dict]]] = {}
 def _title(name: str) -> str:
     if name == "codex":
         return CODEX_TITLE
+    if name == "claude":
+        return CLAUDE_TITLE
     if name == "ollama":
         return "Offline model (Ollama)"
     if name == "custom":
@@ -27,7 +30,7 @@ def _title(name: str) -> str:
 
 def overview(include_logins: bool = True) -> dict:
     """What the Connect card shows: the AIs Karya uses (in order), and the subscriptions it can sign in to."""
-    from . import codex_bridge, kiro_bridge
+    from . import claude_bridge, codex_bridge, kiro_bridge
     rows = []
     for p in settings.providers:
         how = "offline" if p.name == "ollama" else "sign-in" if p.api_key == "login" else "key"
@@ -40,6 +43,10 @@ def overview(include_logins: bool = True) -> dict:
         out["kiro"] = {**kiro_bridge.login_status(), "key": bool(_env("KIRO_API_KEY")), "progress": kiro_bridge.login_progress()}
         out["codex"] = {**codex_bridge.login_status(), "enabled": settings_has("codex"),
                         "progress": codex_bridge.login_progress()}
+        out["claude"] = {**claude_bridge.login_status(), "enabled": settings_has("claude"),
+                         "progress": claude_bridge.login_progress()}
+        from . import local_ai
+        out["ollama"] = local_ai.status()
     return out
 
 
@@ -83,6 +90,12 @@ def models_for(name: str, fresh: bool = False) -> list[dict]:
     if name == "codex":
         from . import codex_bridge
         out = codex_bridge.models()
+    elif name == "claude":
+        from . import claude_bridge
+        out = claude_bridge.models()
+    elif name == "ollama":
+        from . import local_ai
+        out = local_ai.models()
     elif name == "kiro":
         from . import kiro_bridge
         try:
@@ -110,7 +123,7 @@ def set_model(name: str, model: str) -> dict:
         raise ValueError(f"{_title(name)} isn't connected")
     if model.lower() != "auto" and not _MODEL_OK.match(model):
         raise ValueError("That isn't a model name.")
-    key = "CUSTOM_MODEL" if name == "custom" else f"{name.upper()}_MODEL"
+    key = {"custom": "CUSTOM_MODEL", "claude": "CLAUDE_MODEL"}.get(name, f"{name.upper()}_MODEL")
     update_env({key: model})
     return {"provider": name, "model": model}
 
@@ -124,7 +137,9 @@ def use_first(name: str) -> dict:
 
 def remove(name: str) -> dict:
     if name == "ollama":
-        raise ValueError("The offline model is Karya's last resort; it can't be removed here.")
+        update_env({"OLLAMA_ENABLED": "false", **_order_env(drop="ollama")})
+        _MODELS.pop(name, None)
+        return {"removed": name}
     changes: dict = {}
     if name == "kiro":
         from . import kiro_bridge
@@ -132,6 +147,8 @@ def remove(name: str) -> dict:
         kiro_bridge.logout()
     elif name == "codex":
         changes["CODEX_ENABLED"] = "false"       # the Codex CLI stays signed in for your own use
+    elif name == "claude":
+        changes["CLAUDE_ENABLED"] = "false"  # Claude Code stays signed in for your own use
     elif name == "custom":
         changes.update(CUSTOM_BASE_URL="", CUSTOM_API_KEY="", CUSTOM_MODEL="")
     elif name in PRESET_BY_NAME:
@@ -144,17 +161,24 @@ def remove(name: str) -> dict:
 
 
 def start_login(name: str, method: str = "") -> dict:
-    from . import codex_bridge, kiro_bridge
+    from . import claude_bridge, codex_bridge, kiro_bridge
     if name == "kiro":
         return kiro_bridge.start_login(method or "google")
     if name == "codex":
         return codex_bridge.start_login(device=method == "device")
-    raise ValueError("Sign-in works for Kiro and ChatGPT (Codex).")
+    if name == "claude":
+        return claude_bridge.start_login()
+    raise ValueError("Sign-in works for Kiro, Claude (Claude Code) and ChatGPT (Codex).")
 
 
 def login_progress(name: str) -> dict:
     """While signing in: the code or address to show. When done, the subscription becomes Karya's first AI."""
-    from . import codex_bridge, kiro_bridge
+    from . import claude_bridge, codex_bridge, kiro_bridge
+    if name == "claude":
+        progress = claude_bridge.login_progress()
+        if progress.get("state") == "done" and _env("CLAUDE_ENABLED") != "true":
+            update_env({"CLAUDE_ENABLED": "true", **_order_env(first="claude")})
+        return progress
     if name == "kiro":
         progress = kiro_bridge.login_progress()
         if progress.get("state") == "done" and _env("KIRO_LOGIN") != "true":
@@ -164,7 +188,7 @@ def login_progress(name: str) -> dict:
         if progress.get("state") == "done" and _env("CODEX_ENABLED") != "true":
             update_env({"CODEX_ENABLED": "true", **_order_env(first="codex")})
     else:
-        raise ValueError("Sign-in works for Kiro and ChatGPT (Codex).")
+        raise ValueError("Sign-in works for Kiro, Claude (Claude Code) and ChatGPT (Codex).")
     return progress
 
 
@@ -178,6 +202,25 @@ def use_codex() -> dict:
     return {"enabled": "codex"}
 
 
+def use_claude() -> dict:
+    """Claude Code is already signed in on this PC: turn it on as Karya's first AI."""
+    from . import claude_bridge
+    status = claude_bridge.login_status(fresh=True)
+    if not status.get("signed_in"):
+        raise ValueError("Claude Code isn't signed in yet: use Sign in with Claude.")
+    update_env({"CLAUDE_ENABLED": "true", **_order_env(first="claude")})
+    return {"enabled": "claude"}
+
+
+def use_ollama() -> dict:
+    """The offline model is downloaded: turn it on (as the last resort, or first if it's the only AI)."""
+    from . import local_ai
+    if not local_ai.status().get("ready"):
+        raise ValueError("The offline model isn't downloaded yet.")
+    update_env({"OLLAMA_ENABLED": "true", **_order_env(add="ollama")})
+    return {"enabled": "ollama"}
+
+
 def cancel_login(name: str) -> None:
-    from . import codex_bridge, kiro_bridge
-    (kiro_bridge if name == "kiro" else codex_bridge).cancel_login()
+    from . import claude_bridge, codex_bridge, kiro_bridge
+    {"kiro": kiro_bridge, "claude": claude_bridge}.get(name, codex_bridge).cancel_login()

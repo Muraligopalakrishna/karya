@@ -1,112 +1,174 @@
-# Karya
+<p align="center"><img src="docs/logo.svg" width="84" height="84" alt=""></p>
 
-**Your own AI agent that does the work.** Chat with it and it researches the web, finds and applies for jobs, tailors your resume for every application, finds freelance projects, emails people, posts on your social accounts, fixes your PC and builds websites. It runs on your Windows PC, with your own free AI keys and your own logins.
+<h1 align="center">Karya</h1>
 
-*Karya* (कार्य) means "work" or "task" in Hindi.
+<p align="center">
+Your own AI agent for Windows. Tell it what you need and it does the work: it finds and applies for jobs, researches, watches markets, sends email, posts on your socials and fixes your PC.<br>
+Free and open source. It runs on your PC, with the AI you choose and your own logins.
+</p>
 
-## What it can do
+<p align="center">
+<a href="#install">Install</a> ·
+<a href="#connect-an-ai">Connect an AI</a> ·
+<a href="#use-karya-inside-your-ai-apps">Other AI apps</a> ·
+<a href="#your-phone-and-your-bots">Phone and bots</a> ·
+<a href="#compared-with-muse-dots-and-grok-bot">Compare</a> ·
+<a href="#safety">Safety</a>
+</p>
 
-- **Jobs, straight from the companies.** `find_jobs` searches company career sites directly, in any country: Workday (Salesforce, Adobe, Nvidia, Cisco, Accenture, PwC, Walmart, Citi, Barclays and about 50 more), the Greenhouse / Lever / Ashby / SmartRecruiters boards of about 170 product and service companies, Amazon, Microsoft, Google, Netflix and Atlassian, YC startups, Hacker News "Who is hiring", recently funded startups, Indian boards (Instahyre, Cutshort, foundit), The Muse, Arbeitnow and remote boards. A web search finds more company job pages for your role and place, and Karya remembers those companies for next time. LinkedIn is only a fallback when few jobs turn up (or when you ask). Filter by product, service, startup or enterprise companies. Every job gets a match score with reasons, and company sites rank above job boards.
-- **Recently funded companies.** `find_funded_companies` reads funding news from any country (Google News, TechCrunch, Crunchbase News, tech.eu, Inc42, YourStory) and Y Combinator's latest batches, ranks the companies for you (a fresh round, Series A-C, your country and field, open roles that fit), finds each one's careers page and lists their matching jobs.
-- **Your companies.** Add any company by name or careers-page URL in your job preferences; Karya finds its careers system once and checks it on every search.
-- **It remembers what you applied to.** Every application goes into a tracker on your PC. New searches leave out jobs you already applied to, and companies you applied to in the last 60 days, so each session brings new companies. Name a company (or ask for them) to see it again. Karya never submits the same job twice.
-- **Applying.** It reads the posting and the form's questions, writes a cover letter, builds a resume tailored to that job (PDF), fills the form and submits after you approve. Like autofill apps, it fills everything it already knows in one step (name, contact details, links, location, the tailored resume, your earlier answers), so the AI only handles the questions that are left. It never adds a skill you haven't approved, and it logs every application.
-- **No resume yet?** It builds one with you by asking short questions.
-- **Accounts.** Save logins in Settings, or Karya asks when a site needs one. Passwords are encrypted on your PC with Windows DPAPI and never sent to the AI. Karya types them into the page itself, and only on the matching website. It can also create new accounts for you with strong generated passwords.
-- **Research and outreach.** Web and news search, reading pages, and `find_contacts` (public emails and social links for any website), then personal emails that you approve one by one.
-- **Markets.** Stock prices, history, news and market overview (NSE/BSE, US and more).
-- **What people are saying about a market.** `market_sentiment` reads what traders post about any stock, coin, forex pair, index or topic, all at once:
-  - StockTwits, where traders label their own posts bullish or bearish
-  - the market's subreddits on Reddit
-  - X, searched in Karya's browser with your login
-  - TradingView ideas (long or short)
-  - investor forums: ValuePickr for India, Hacker News for tech
-  - YouTube video titles and the news; LinkedIn posts too, when you ask for them
+![Karya's home screen](docs/screenshot-home.png)
 
-  You get the crowd's mood with counts per source, the price levels traders mention (targets, stops, support, resistance), what they're talking about, and real quotes with links. It reports opinions, not advice.
-- **Crawl any website.** `crawl_site` goes through a whole site and returns the pages and passages about your topic: forums, blogs, news, docs and company sites. Name a site ("linkedin", "x", "reddit") with your words and it starts at that site's own search. Public sites are read over plain HTTP, following robots.txt. Sites that need a login (LinkedIn, X, Facebook, Instagram) are read in Karya's browser, where you're logged in, a few seconds per page and at most 30 pages per crawl. It only reads: it never clicks, posts, follows or logs in, and it stops at login pages and security checks.
-- **Browser automation** like rtrvr.ai: posting on LinkedIn, X, Reddit and more, filling forms, any site you're logged into. Pages without buttons work too: canvas, maps and game boards (it can play chess on chess.com and lichess).
-- **Your bots.** Make named helpers, like Grok Bots or OpenAI's Dots, that work for you in the background while you keep chatting. A bot can do anything Karya can, not just one kind of task: find and apply to jobs, research, watch markets, read and send email, post, fix PC problems, build websites. Give one a task any time ("@Maya find 3 PM jobs in Pune and apply", in the chat, on WhatsApp or in Setup), or give it a schedule too ("every morning at 9", "every 4 hours"). Each bot has its own history and notes, so it remembers what it already covered. It reports in the chat and on WhatsApp, and asks there before it sends, posts or submits. Two bots work at a time, in parallel with the chat; they take turns with you on the browser and the job list, and your own work in the chat comes first. Bots work while Karya runs on your PC; Setup can keep the PC from sleeping so scheduled bots run on time.
-- **Tasks from your phone (WhatsApp).** Setup > "Give Karya tasks from your phone" opens WhatsApp Web in its own window; link it once (WhatsApp > Linked devices > Link a device). Then message yourself on WhatsApp: Karya does the task, asks you there before it sends, posts or submits (reply YES or NO, or the numbers of the jobs to apply to) and reports back. "@Name task" gives the task to one of your bots. STATUS, STOP, STOP Name, BOTS and HELP work too. Only your own "Message yourself" chat is read, and logins never go over WhatsApp. An approval nobody answers within 30 minutes is refused. Karya has to be running on your PC to read WhatsApp: turn on Setup > "Start Karya when I sign in to Windows" (or tell Karya "start with Windows") and Windows starts it by itself, minimized. Messages you send while it's off are done when it starts, if they're under 6 hours old.
-- **PC help.** Diagnose and fix problems, manage files, run commands (it asks first).
-- **Websites.** Build, preview and publish to Vercel.
+*Karya* (कार्य) means "work" in Hindi.
 
-## Install (Windows 10/11)
+## What you can ask
 
-1. Install [Python 3.11+](https://www.python.org/downloads/) (tick "Add to PATH") and Google Chrome.
-2. Download Karya: on https://github.com/Muraligopalakrishna/karya click **Code → Download ZIP** and unzip it (or `git clone https://github.com/Muraligopalakrishna/karya.git`), then double-click **`start.bat`**. The first run installs everything.
-3. The chat opens in your browser. Click **Setup**. Under **Connect your AI** do one of these:
-   - **Paste any AI key** into the one box. Karya works out which service it's from (OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI, Together, Cerebras or Kiro), saves it and checks it. Free keys: [Gemini](https://aistudio.google.com/apikey), [Groq](https://console.groq.com/keys), [OpenRouter](https://openrouter.ai/keys).
-   - **Sign in with Kiro** (Google, GitHub or AWS Builder ID). No key needed. It needs the [Kiro CLI](https://kiro.dev/downloads). A Kiro API key (`ksk_...`) works too.
-   - **Use your ChatGPT plan** (Plus, Pro, Business, Edu) through the official Codex CLI: install it once with `npm install -g @openai/codex` (needs [Node.js](https://nodejs.org)), then click **Sign in with ChatGPT**. Karya runs Codex with its shell, web, apps and browser switched off, so Codex only thinks and Karya does the work. It uses your plan's Codex limits.
+Ask in plain words, in Karya's chat, on WhatsApp, or from another AI app.
 
-   Then pick the **model** from the list your key or plan offers, and which AI goes first. Karya moves to the next one when one is busy or out of credits. It also learns each key's limits: small free plans get small requests and pauses, big paid plans run at full speed. Every service is still listed one by one under "advanced" in Settings.
-4. Optional, in the same Setup panel:
-   - your Gmail address plus an [App Password](https://myaccount.google.com/apppasswords), to send and read email
-   - your resume path
-   - a Vercel token, to publish websites
+| You ask | Karya |
+|---|---|
+| Find product manager jobs in Bengaluru that fit my resume and apply to the best 3 | searches company career sites, ranks the jobs against your resume and lets you pick. For each pick it tailors your resume, fills in the form and submits once you approve |
+| What are traders saying about Nifty today? | reads StockTwits, Reddit, X, TradingView, forums, YouTube and the news, then reports the mood, the price levels people mention and real quotes with links |
+| Research the best budget laptops for coding | searches, reads a dozen pages and gives you a short answer with the sources |
+| Make a bot called Maya that checks new PM jobs every morning at 9 and applies | makes a bot that does it every day and reports to you on WhatsApp |
+| Email these 5 startups about my design services | finds their public addresses and writes each one a personal email. You approve every send |
+| Post this video on LinkedIn and X | uploads the video, writes the post and asks before it posts |
+| My PC is slow | checks what's using memory, disk and CPU, and fixes it with your OK |
+| Build me a portfolio website | builds it from your resume, shows a preview and can publish it on Vercel |
 
-**Everyone uses their own keys and accounts.** Nothing is shared and there is no Karya server: your settings live in `.env` and your data lives in `data/`, both on your PC and both excluded from git.
+## Install
 
-There's also an offline mode: install [Ollama](https://ollama.com), then run `ollama pull qwen3.5:4b` and `ollama create karya-qwen -f Modelfile`. It's free and private, but much slower on PCs without a GPU.
+You need Windows 10 or 11, [Python 3.11 or newer](https://www.python.org/downloads/) (tick "Add Python to PATH" in the installer) and Google Chrome.
 
-## Use your own Chrome (Karya Browser Link)
+1. Download Karya. On this page click **Code > Download ZIP** and unzip it, or run `git clone https://github.com/Muraligopalakrishna/karya.git`.
+2. Double-click `start.bat`. The first start installs what Karya needs, which takes a few minutes, then opens Karya in your browser.
+3. Follow the welcome guide. It asks three things and you can skip any of them:
+   - your AI (see the next section)
+   - about you: your name, email and city, and your resume, which Karya reads once and tailors for every job
+   - extras: tasks from WhatsApp, your own Chrome, and starting Karya with Windows
 
-By default Karya browses in its own Chrome window. To let it work in **your** Chrome, with the logins you already have, add the small extension in `karya/extension` once:
+![The welcome guide](docs/screenshot-guide.png)
 
-1. Open `chrome://extensions` in Chrome and turn on **Developer mode** (top right).
-2. Click **Load unpacked** and choose the `karya\extension` folder inside your Karya folder. Setup shows the exact path and has a copy button.
+Everything stays on your PC. Your settings live in `.env` and your data in `data/`, and git leaves both out. There is no Karya server and no Karya account. Setup is the button at the top right, and **Setup > Safety & more** shows the welcome guide again.
 
-That's it. Whenever Karya is running, the extension connects by itself and Setup shows "Your Chrome: connected".
+## Connect an AI
 
-- Karya opens its own tab in a purple **Karya** tab group and works only there. It can't see or touch your other tabs, unless you click "Let Karya use this tab" in the extension's menu.
-- Approvals still happen in Karya's chat. The extension icon shows a red **!** when Karya is waiting for you.
-- On game boards, maps and canvas, sites like chess.com ignore simulated clicks, so the extension uses Chrome's debugger to send real mouse clicks. While it does, Chrome shows a "Karya Browser Link started debugging this browser" bar. It disappears 20 seconds after the last such action.
-- Under Setup → "Browser Karya uses" you can pick your Chrome only, Karya's own window only, or automatic (the default).
+Karya needs an AI to think with. One is enough. If you add more, Karya moves to the next one when one is busy or out of credits. Open **Setup > AI** and pick one:
 
-Chrome doesn't let programs control your normal profile directly, so this extension is the supported way to do it. It talks only to Karya on `127.0.0.1`, using your install's private token.
+| Choose | What you do | What it costs |
+|---|---|---|
+| Paste a key | Paste a key from OpenAI, Claude, Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI or Kiro. Karya works out which service it's from and checks it. | Free keys: [Gemini](https://aistudio.google.com/apikey), [Groq](https://console.groq.com/keys), [OpenRouter](https://openrouter.ai/keys) |
+| Kiro | Click Google, GitHub or AWS Builder ID and sign in. Needs the [Kiro CLI](https://kiro.dev/downloads). | Your Kiro plan |
+| Claude | Click **Sign in with Claude**. Needs [Claude Code](https://claude.com/claude-code). If Claude Code is already signed in on your PC, click **Use Claude**. | Your Claude plan |
+| ChatGPT | Click **Sign in with ChatGPT**. Needs the Codex CLI: install [Node.js](https://nodejs.org), then run `npm install -g @openai/codex`. | Your ChatGPT plan |
+| Free, on this PC | Install [Ollama](https://ollama.com/download), then click **Download the free model** (about 3 GB). | Free and private, but slow without a graphics card |
 
-## Use Karya from other AI apps and CLIs (MCP)
+Then pick the model from the list your key or plan offers, and choose which AI goes first. Karya learns each key's limits, so small free plans get small requests and big paid plans run at full speed.
 
-Claude Desktop, Cursor, Kiro, VS Code, Windsurf, OpenClaw, Claude Code, Codex, Gemini CLI and other MCP apps can use Karya's tools with **their own AI model**: browsing and posting in a real Chrome, logins from your vault, email, job search, tailored resumes and applications.
+Karya runs Claude Code and Codex with their own tools switched off, so they only think and Karya does the work. Your plan's usage limits apply as usual.
 
-Setup → "Use Karya from other AI apps and CLIs" lists the AI apps installed on your PC with an **Add Karya** button each (Claude Code, Codex, Kiro, Cursor, Claude Desktop, VS Code, Gemini CLI, Windsurf, Qwen Code). It adds Karya to that app's config and keeps your other servers; the old file is saved next to it as `.before-karya`. Restart the app afterwards. To add it by hand, the same panel shows the exact config with copy buttons. For apps with a config file it looks like this (use your Karya folder):
+![Setup, AI tab](docs/screenshot-setup.png)
+
+## Use Karya inside your AI apps
+
+There are two ways to use Karya with Cursor, Claude Code, Codex, Kiro, VS Code and similar apps.
+
+1. As Karya's brain (the section above). You chat in Karya, and your Claude, ChatGPT or Kiro plan does the thinking.
+2. Inside the app. You chat in Cursor, Claude Code, Codex, Kiro, VS Code, Claude Desktop, Gemini CLI, Windsurf or Qwen Code, and its AI uses Karya's tools: a real Chrome with your logins, email, job search, tailored resumes and applications.
+
+For the second way, open **Setup > Other AI apps**. It lists the AI apps on your PC with an **Add Karya** button each. Karya adds itself to that app's settings, keeps your other servers, and saves the old file next to it as `.before-karya`. Restart the app, then ask it something like "use Karya to find PM jobs and apply".
+
+Karya still runs every check when another app is in charge, and asks you before it sends, posts, submits or pays (inside the app when it supports that, otherwise in Karya's window, which opens by itself).
+
+<details>
+<summary>Adding Karya by hand</summary>
+
+Apps with a config file take this (use your own Karya folder):
 
 ```json
 { "mcpServers": { "karya": { "command": "C:\\Karya\\.venv\\Scripts\\python.exe", "args": ["C:\\Karya\\karya_mcp.py"] } } }
 ```
 
-For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:\Karya\.venv\Scripts\python.exe" "C:\Karya\karya_mcp.py"`. Codex, Gemini CLI, Qwen Code and Kiro CLI have their own versions in Setup.
+For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:\Karya\.venv\Scripts\python.exe" "C:\Karya\karya_mcp.py"`. Setup > Other AI apps shows the exact config and commands for Codex, Gemini CLI, Qwen Code, Kiro CLI and VS Code, with copy buttons.
 
-- The AI app starts Karya by itself if it isn't running.
-- Karya needs no AI key of its own here: the app's model does the thinking, including writing tailored resumes. Karya checks every fact against your real resume (no invented jobs, skills or numbers) and makes the PDF.
-- **The Chrome extension is optional.** Without it Karya works in its own Chrome window (log in to your sites there once). With it Karya uses your everyday Chrome and its logins.
-- Every check still runs, whichever AI is in charge:
-  - approvals for sending, posting, submitting, paying and deleting (inside the app when it supports MCP approvals, otherwise in Karya's window, which opens by itself)
-  - empty required fields, CAPTCHAs, guessed answers
-  - made-up, bounced or duplicate emails, and one email per business
-  - the same post twice
-  - daily limits: 40 emails, 10 posts and 30 applications by default, changeable in Setup
-- Submits, posts and bids come back as `RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED`. `karya_activity` lists what really happened today.
-- 40 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, e.g. `browser,email`, or `all`.
-- Passwords never reach the other AI. Setup has a switch to turn MCP access off.
-- Some apps stop a tool call after a minute. Set a longer tool timeout (Codex: `tool_timeout_sec = 900`) so there's time to approve.
+- The app starts Karya by itself if it isn't running.
+- Karya needs no AI of its own here: the app's model does the thinking, including writing tailored resumes. Karya checks every fact against your real resume and makes the PDF.
+- 40 tools are shared by default (Cursor allows about 40 in total). Pick others with `KARYA_MCP_TOOLS`, for example `browser,email`, or `all`.
+- Submits, posts and bids come back as `RESULT: SUBMITTED`, `NOT SUBMITTED` or `UNCONFIRMED`. `karya_activity` lists what really happened today.
+- Some apps stop a tool call after a minute. Give them a longer timeout so there's time to approve (Codex: `tool_timeout_sec = 900`).
+- Passwords never reach the other app's AI, and Setup can switch MCP access off.
+
+</details>
+
+## Your phone and your bots
+
+### Tasks from WhatsApp
+
+**Setup > Phone & bots > Connect WhatsApp** opens WhatsApp Web in its own window. Link it once from your phone (WhatsApp > Settings > Linked devices > Link a device). After that you give Karya tasks in your own "Message yourself" chat:
+
+- Karya answers "On it", does the task and sends you the result there.
+- Before it sends, posts or submits, it asks you in that chat. Reply YES or NO, or with the numbers of the jobs to apply to.
+- STATUS, STOP, BOTS and HELP work too. `@Maya find 3 PM jobs` gives the task to your bot Maya, and `STOP Maya` stops her.
+
+Karya reads only that one chat, and passwords never go over WhatsApp. If nobody answers an approval within 30 minutes, Karya doesn't do it.
+
+Karya has to be running on your PC to read WhatsApp. Turn on **Start Karya when I sign in to Windows** (in the same tab, or tell Karya "start with Windows") and it starts by itself, minimized, every time you sign in. If you send a message while Karya is off, it does the task when it starts, as long as the message is less than 6 hours old.
+
+### Bots
+
+Bots are named helpers, like Grok Bots or OpenAI's Dots, that work in the background while you keep chatting. A bot can do anything Karya can. Make one in Setup or just ask ("make a bot called Maya that finds PM jobs in India and applies"), then give it tasks with `@Maya ...` in the chat or on WhatsApp, or put it on a schedule ("every morning at 9", "every 4 hours").
+
+Each bot keeps its own history and notes, so it knows what it already covered. Two bots work at the same time. They take turns with you on the browser, and your own chat always goes first. Setup can keep the PC from sleeping so scheduled bots run on time.
+
+![Phone and bots](docs/screenshot-bots.png)
+
+## Compared with Muse, Dots and Grok Bot
+
+![How Karya compares with Meta Muse, OpenAI Dots and Grok Bot](docs/compare-features.svg)
+
+![What each one costs per month](docs/compare-cost.svg)
+
+Meta Muse, OpenAI Dots and Grok Bot run on the companies' cloud computers, so they keep working when your PC is off. Karya runs on your PC instead. It costs nothing, works in any country, lets you choose the AI, and keeps your logins and files on your machine, but your PC has to be on.
+
+## How fast it is
+
+![Measured times for Karya tasks](docs/speed.svg)
+
+## Everything Karya can do
+
+- Jobs straight from the companies, in any country. `find_jobs` searches Workday (Salesforce, Adobe, Nvidia, Cisco, Accenture, PwC, Walmart, Citi, Barclays and about 50 more), the Greenhouse, Lever, Ashby and SmartRecruiters boards of about 170 companies, Amazon, Microsoft, Google, Netflix and Atlassian, YC startups, Hacker News "Who is hiring", Indian boards (Instahyre, Cutshort, foundit), The Muse, Arbeitnow and remote boards. A web search finds more company job pages for your role and place. LinkedIn is a fallback when few jobs turn up, or when you ask for it.
+- Recently funded startups. `find_funded_companies` reads funding news from any country and Y Combinator's latest batches, ranks the companies for you and lists their open roles.
+- Applying. Karya reads the posting and the form, builds a resume tailored to that job (PDF), fills in everything it already knows in one step and asks you only what it can't know (notice period, salary, job dates). It never adds a skill you haven't confirmed, and it submits after you approve.
+- It remembers what you applied to. New searches leave out jobs you already applied to and companies you applied to in the last 60 days, and Karya never submits the same job twice.
+- Login codes. When a site sends a one-time code, Karya finds it in that site's newest email and types it in. A code that arrives by text message is asked for in the chat or on WhatsApp.
+- Pop-ups. Nags like "Are you still looking for a job?", "Turn on notifications" and cookie banners are closed by themselves; dialogs that are part of your task stay open.
+- Research. Web and news search, `deep_research` (a dozen pages read in one step) and `crawl_site` for a whole website, including sites you're logged into such as LinkedIn and X (it only reads there).
+- Markets. Prices, history and news for NSE, BSE, US stocks and more, and `market_sentiment` for what traders say about any stock, coin, forex pair or index. It reports opinions, not advice.
+- Email and outreach. `find_contacts` lists the public emails and social links of a website, and Karya writes personal emails that you approve one by one.
+- Social posts on LinkedIn, X, Reddit, Instagram and more. With a video or photo it attaches the file first and posts only with it.
+- Accounts. Karya can sign up on job portals for you with strong generated passwords, kept encrypted on your PC.
+- PC help. Diagnose and fix problems, manage files, run commands (it asks first).
+- Websites. Build, preview and publish to Vercel.
+
+## Use your own Chrome
+
+Karya browses in its own Chrome window by default. To let it work in your everyday Chrome, with the logins you already have, add the Karya Browser Link extension once:
+
+1. Open `chrome://extensions` in Chrome and turn on **Developer mode** (top right).
+2. Click **Load unpacked** and choose the `karya\extension` folder inside your Karya folder. **Setup > Browser & logins** shows the exact path with a copy button.
+
+Whenever Karya runs, the extension connects by itself. Karya works only in its own tabs, in a purple "Karya" tab group, and can't see your other tabs. On game boards and maps Chrome may show a "started debugging this browser" bar for a few seconds while Karya clicks; that's the extension sending real mouse clicks.
 
 ## Safety
 
-- **Full access (autopilot).** Off by default. Turn it on in Setup and Karya does everything without stopping to ask - fill forms, send, post, apply, run commands. Its quality checks still run (empty required fields, duplicate or made-up emails, the same post twice, daily limits, and it still verifies that a submit/post actually went through). Real-money payments and deleting an account or data still ask first, unless you also switch that floor off. There's a per-run cap so a loop can't fire hundreds of actions.
-- **One login for everything.** In Setup you can save a primary login (email + password) and turn on "reuse one login across sites". Karya then signs in and creates accounts on job portals and other sites with it, without asking each time. For new sign-ups it can reuse that password, or (safer) generate and store a unique one per site so you never type them.
-- **Posting done right.** Before posting, Karya reads a short playbook (`how_to_post`) and follows it in order. With a video or photo, it attaches the file first, waits until it's processed, then types the text, and it won't click Post without the file you gave it. It picks the file itself, so the Windows file dialog never opens. On Instagram it keeps the video's original size (picks "Original", not a square crop) and keeps the audio on. Posting on X, LinkedIn, Reddit and Instagram is free; X Premium is not needed to post.
-- Karya shows an **Approve / Deny** card before it sends an email, posts, submits an application, pays, deletes or publishes (unless full access is on). Commands and file changes ask too, unless you tick "Ask only for critical actions".
-- Before a Submit click Karya checks for empty required fields. Afterwards it reads the page and reports SUBMITTED, NOT SUBMITTED (with the page's errors) or UNCONFIRMED. It only says "submitted" when the site confirms it.
-- Application questions are answered from your resume and profile. Anything they don't cover (notice period, salary, years of a specific experience) Karya asks you; it never guesses.
-- When you pick several jobs, Karya keeps the list itself and goes through all of them, then shows what was submitted, skipped (and why) or still open. The Submit card names the job and lists every answer the form will send.
-- CAPTCHAs ("I'm not a robot") are left for you to solve; Karya never ticks them.
-- Passwords never pass through the chat or the AI. They're typed into pages only on the site they belong to; anything else needs your explicit approval.
-- Web pages and emails are treated as untrusted data, never as instructions.
-- The chat only listens on `127.0.0.1` behind a private token link. Every action is logged in `data/logs/actions.jsonl`.
-- Karya refuses to read its own secret files (`.env`, the vault, the token) and OS credential stores (SSH keys, the browser's password store), and it scrubs API keys, the token and the vault out of any tool output before the AI, the chat or the logs see them. Passwords are encrypted with Windows DPAPI and never go to the AI. Ask Karya to "run a security check" for a plain-language report.
-- Use automation responsibly. LinkedIn, X and similar sites limit automated activity: don't mass-apply or mass-post, and respect each site's terms.
+- Karya asks before it sends an email, posts, submits an application, pays, deletes or publishes. Commands and file changes ask too, unless you choose "Ask only for big actions".
+- Full access (autopilot) is off by default. When you turn it on in Setup, Karya stops asking but every check still runs, and payments and account deletion still ask unless you turn that off too.
+- Before a Submit, Karya checks for empty required fields. Afterwards it reads the page and says SUBMITTED only when the site confirms it.
+- Form questions are answered from your resume and your own earlier answers. Anything else, Karya asks; it never guesses.
+- CAPTCHAs are left for you to solve.
+- Passwords are encrypted with Windows (DPAPI), typed only into the site they belong to, and never sent to the AI. Karya hides keys, tokens and passwords from anything the AI, the chat or the logs see.
+- Web pages and emails are treated as data, never as instructions.
+- The chat listens only on `127.0.0.1`, behind a private link. Every action is logged in `data/logs/actions.jsonl`.
+- Daily limits (40 emails, 10 posts, 30 applications by default, changeable in Setup) keep your accounts from looking like spam. Sites like LinkedIn and X limit automated activity, so don't mass-apply or mass-post.
 
 ## Development
 
@@ -114,18 +176,18 @@ For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:
 .venv\Scripts\python.exe -m pytest tests -q
 ```
 
-- `KARYA_SKIP_LIVE=1` skips tests that use the internet.
-- `KARYA_RUN_OLLAMA=1` adds the slow offline-model test.
+`KARYA_SKIP_LIVE=1` skips the tests that need the internet, and `KARYA_RUN_OLLAMA=1` adds the slow offline-model test.
 
 | Path | What's there |
 |---|---|
 | `karya/agent.py` | the agent loop |
-| `karya/llm.py` | multi-provider AI client |
+| `karya/llm.py` | the AI client (keys, Kiro, Claude Code, Codex, Ollama) |
 | `karya/tools/` | all tools |
-| `karya/vault.py` | encrypted accounts |
-| `karya/static/` | chat UI |
+| `karya/scheduler.py`, `karya/phone.py` | bots and WhatsApp |
+| `karya/static/` | the chat page and Setup |
+| `docs/` | logo, charts and screenshots |
 
-To add a tool, write a function with the `@tool(...)` decorator and give it a risk level. The agent picks it up automatically.
+To add a tool, write a function with the `@tool(...)` decorator and give it a risk level. The agent picks it up by itself.
 
 ## License
 

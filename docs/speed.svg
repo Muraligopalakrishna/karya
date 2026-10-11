@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560" role="img" aria-label="Measured times for Karya tasks, from 1.1 seconds for one AI step to 54 seconds for reading 149 posts about gold">
+  <style>
+    text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #e7ecf3; }
+    .title { font-size: 22px; font-weight: 700; }
+    .sub { font-size: 13px; fill: #9aa6b8; }
+    .label { font-size: 13.5px; fill: #c9d2de; }
+    .val { font-size: 12.5px; font-weight: 600; }
+    .axis { font-size: 12px; fill: #9aa6b8; text-anchor: middle; }
+    .grid { stroke: #263046; stroke-width: 1; }
+    .bar { fill: #4f8cff; }
+    .bot { fill: #8b5cf6; }
+  </style>
+  <defs>
+    <linearGradient id="speed-bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4f8cff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.5" y="0.5" width="899" height="559" rx="16" fill="#0f1522" stroke="#263046"/>
+  <text class="title" x="32" y="46">How long things take</text>
+  <text class="sub" x="32" y="70">Measured on our Windows laptop in October 2026, with a Kiro plan. Your times depend on your AI, your internet and the site.</text>
+
+  <line class="grid" x1="360" y1="92" x2="360" y2="502"/>
+  <line class="grid" x1="440" y1="92" x2="440" y2="502"/>
+  <line class="grid" x1="520" y1="92" x2="520" y2="502"/>
+  <line class="grid" x1="600" y1="92" x2="600" y2="502"/>
+  <line class="grid" x1="680" y1="92" x2="680" y2="502"/>
+  <line class="grid" x1="760" y1="92" x2="760" y2="502"/>
+  <line class="grid" x1="840" y1="92" x2="840" y2="502"/>
+  <text class="axis" x="360" y="522">0 s</text>
+  <text class="axis" x="440" y="522">10 s</text>
+  <text class="axis" x="520" y="522">20 s</text>
+  <text class="axis" x="600" y="522">30 s</text>
+  <text class="axis" x="680" y="522">40 s</text>
+  <text class="axis" x="760" y="522">50 s</text>
+  <text class="axis" x="840" y="522">60 s</text>
+
+  <text class="label" x="32" y="114">One AI step (Kiro, Qwen3 Coder Next)</text>
+  <rect x="360" y="102" width="8.8" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="376" y="115">1.1 s</text>
+
+  <text class="label" x="32" y="150">One AI step (Kiro, GLM-5)</text>
+  <rect x="360" y="138" width="19.2" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="387" y="151">2.4 s</text>
+
+  <text class="label" x="32" y="186">Karya starts and the chat is ready</text>
+  <rect x="360" y="174" width="48" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="416" y="187">6 s</text>
+
+  <text class="label" x="32" y="222">Finds a login code in Gmail</text>
+  <rect x="360" y="210" width="52" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="420" y="223">6.5 s</text>
+
+  <text class="label" x="32" y="258">Reads 73 posts about Reliance</text>
+  <rect x="360" y="246" width="88" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="456" y="259">11 s</text>
+
+  <text class="label" x="32" y="294">A bot finishes a quick task</text>
+  <rect x="360" y="282" width="96" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="464" y="295">12 s</text>
+
+  <text class="label" x="32" y="330">Fills a 16-field job application</text>
+  <rect x="360" y="318" width="128" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="496" y="331">16 s</text>
+
+  <text class="label" x="32" y="366">Deep research, 12 pages read</text>
+  <rect x="360" y="354" width="152" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="520" y="367">19 s</text>
+
+  <text class="label" x="32" y="402">WhatsApp ready after Karya starts</text>
+  <rect x="360" y="390" width="160" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="528" y="403">20 s</text>
+
+  <text class="label" x="32" y="438">Two bots at once, both done</text>
+  <rect x="360" y="426" width="168" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="536" y="439">21 s</text>
+
+  <text class="label" x="32" y="474">Mood on gold: 149 posts from 6 sites</text>
+  <rect x="360" y="462" width="432" height="16" rx="3" fill="url(#speed-bar)"/>
+  <text class="val" x="800" y="475">54 s</text>
+</svg>

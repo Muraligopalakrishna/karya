@@ -7,6 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# The environment Windows started Karya with, before .env is loaded: what helper CLIs (Claude Code) get, so Karya's
+# own keys and settings never change how they sign in or which model they use.
+ORIGINAL_ENV = dict(os.environ)
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 LOG_DIR = DATA_DIR / "logs"
@@ -104,6 +107,7 @@ PRESETS: tuple[Preset, ...] = (
 )
 PRESET_BY_NAME = {p.name: p for p in PRESETS}
 CODEX_TITLE = "ChatGPT plan (via Codex CLI)"
+CLAUDE_TITLE = "Claude plan (via Claude Code)"
 
 # What a pasted key looks like -> which service it's from. Ambiguous shapes list several (the user picks).
 KEY_SHAPES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -210,6 +214,11 @@ class Settings:
                                       reasoning_effort=_env("CODEX_REASONING", "low"), context_chars=200_000,
                                       timeout=240.0, fallback_models=("gpt-5.4",), max_input_tokens=50_000,
                                       label_name=CODEX_TITLE)
+        if _bool("CLAUDE_ENABLED", False):   # a Claude plan (or Claude Code's own setup), via the Claude Code CLI
+            known["claude"] = Provider("claude", "claude-cli://print", "login", _env("CLAUDE_MODEL", "sonnet"),
+                                       reasoning_effort=_env("CLAUDE_EFFORT", "low"), context_chars=200_000,
+                                       timeout=240.0, fallback_models=(), max_input_tokens=60_000,
+                                       label_name=CLAUDE_TITLE)
         if _bool("OLLAMA_ENABLED", True):
             known["ollama"] = Provider(
                 "ollama", _env("OLLAMA_BASE_URL", "http://localhost:11434/v1"), "ollama",
@@ -218,7 +227,7 @@ class Settings:
                 compact_tools=True, slow=True, label_name="Ollama (offline)")
         order = [p.strip().lower() for p in _env("LLM_PROVIDERS").split(",") if p.strip()]
         if not order:  # default: the user's own gateway first, then subscriptions and paid APIs, free tiers, offline last
-            order = ["custom", "kiro", "codex", *[p.name for p in PRESETS if p.name != "kiro"], "ollama"]
+            order = ["custom", "kiro", "claude", "codex", *[p.name for p in PRESETS if p.name != "kiro"], "ollama"]
         return [known[n] for n in order if n in known]
 
     @property
@@ -251,7 +260,8 @@ EDITABLE_KEYS = tuple([k for p in PRESETS for k in (p.key_env, f"{p.name.upper()
                         "KARYA_MAX_APPLICATIONS_PER_DAY", "KARYA_FULL_ACCESS", "KARYA_FULL_ACCESS_PAYMENTS",
                         "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED",
                         "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL",
-                        "KARYA_KEEP_AWAKE"])
+                        "KARYA_KEEP_AWAKE", "CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_EFFORT",
+                        "OLLAMA_ENABLED", "KARYA_ONBOARDED"])
 SECRET_KEYS = {p.key_env for p in PRESETS} | {"CUSTOM_API_KEY", "EMAIL_APP_PASSWORD", "VERCEL_TOKEN"}
 
 

@@ -11,6 +11,7 @@
   const $ = (id) => document.getElementById(id);
   const chat = $("chat"), input = $("input"), form = $("chat-form"), sendBtn = $("send-btn"), stopBtn = $("stop-btn");
   const statusLine = $("status-line"), dot = $("conn-dot"), providerLabel = $("provider-label"), autoMode = $("auto-mode"), keepGoing = $("keep-going");
+  const aiPill = $("ai-pill"), notice = $("notice");
   let ws = null, busy = false, activity = null, retry = 0;
   const steps = new Map();
 
@@ -277,50 +278,74 @@
     };
   }
 
-  async function loadStatus() {
-    try {
-      const r = await fetch(`/api/status?token=${encodeURIComponent(token)}`);
-      const s = await r.json();
-      providerLabel.textContent = s.providers && s.providers.length ? `brain: ${s.providers[0]}` : "no AI configured";
-      renderSetup(s);
-      if (!s.providers || !s.providers.length || s.providers.every((p) => p.startsWith("ollama"))) $("setup-panel").hidden = false;
-    } catch (e) { providerLabel.textContent = "status unavailable"; }
+  // ---------- status: the header, the notice, Setup and the first-run guide all follow it ----------
+  const statusListeners = new Set();
+  let lastStatus = null, guideChecked = false;
+  const AI_NAMES = { kiro: "Kiro", claude: "Claude", codex: "ChatGPT", groq: "Groq", gemini: "Gemini", openai: "OpenAI",
+    anthropic: "Claude API", openrouter: "OpenRouter", deepseek: "DeepSeek", mistral: "Mistral", xai: "Grok",
+    together: "Together", cerebras: "Cerebras", ollama: "Offline AI", custom: "Your API" };
+  function aiLabel(s) {
+    if (!s.ai_ready) return "No AI connected";
+    const list = s.providers || [];
+    const first = list.find((p) => !p.startsWith("ollama:")) || list[0] || "";
+    const [name, ...rest] = first.split(":");
+    const model = rest.join(":");
+    return `AI: ${AI_NAMES[name] || name}${model && model !== "auto" ? " \u00b7 " + model : ""}`;
+  }
+  function onStatus(fn) {
+    statusListeners.add(fn);
+    if (lastStatus) { try { fn(lastStatus); } catch (e) { /* one view failing never breaks the rest */ } }
   }
 
-  function renderSetup(s) {
-    const panel = $("setup-panel");
-    let statusBox = panel.querySelector(".status-box");
-    if (!statusBox) {  // build the forms once; later status updates must not wipe what the user typed
-      panel.replaceChildren();
-      statusBox = document.createElement("div"); statusBox.className = "status-box";
-      panel.append(statusBox, connectBox(), phoneBox(), agentsBox(), mcpBox(), settingsForm(), accountsBox());
-    }
-    const phone = panel.querySelector(".phone-box"), agentList = panel.querySelector(".agents-box");
-    if (phone && phone.update) phone.update(s.whatsapp || {});
-    if (phone && phone.setAutostart) phone.setAutostart(s.autostart);
-    if (agentList && agentList.update) agentList.update(s.agents || []);
-    if (agentList && agentList.setAwake) agentList.setAwake(s.keep_awake);
-    clearTimeout(renderSetup.poll);
-    if (["starting", "opening", "needs_qr"].includes((s.whatsapp || {}).state)) renderSetup.poll = setTimeout(loadStatus, 4000);
-    statusBox.replaceChildren();
-    const h = document.createElement("h3"); h.textContent = "Status";
-    const ul = document.createElement("ul");
-    const item = (ok, text) => { const li = document.createElement("li"); li.className = ok ? "ok" : "missing"; li.textContent = (ok ? "\u2714 " : "\u26A0 ") + text; ul.appendChild(li); };
-    const cloud = (s.providers || []).filter((p) => !p.startsWith("ollama"));
-    item(cloud.length > 0, cloud.length ? `AI brain: ${s.providers.join(" \u2192 ")}` : "AI brain: only the slow offline model. Add any API key below (free or paid).");
-    Object.values(s.checks || {}).forEach((c) => item(!!c.ok, describeCheck(c).replace(/^[\u2714\u2716] /, "")));
-    item(!!s.email, s.email ? `Email: ${s.email}` : "Email: not set (Gmail address + App Password below), or Karya will ask when it needs it.");
-    item(!!s.resume, s.resume ? `Resume: ${s.resume}` : "Resume: not set. Add the path below, or ask Karya to build one with you.");
-    item(!!s.vercel, s.vercel ? "Website deploys: Vercel token set" : "Website deploys: optional Vercel token.");
-    statusBox.append(h, ul);
-    const bl = s.browser_link || {};
-    if (s.browser_mode === "karya") item(true, "Browser: Karya's own Chrome window (change it below).");
-    else if (bl.connected) item(true, `Your ${bl.browser || "Chrome"}: connected. Karya works in its own tab there (purple "Karya" tab group).` +
-      (bl.needs_reload ? " An update is ready: click \u21bb on Karya Browser Link in chrome://extensions when convenient (it works either way)." : ""));
-    else {
-      item(false, "Your Chrome: not linked yet. Karya uses its own window until you add the Karya Browser Link extension (one time, 1 minute):");
-      statusBox.appendChild(extensionSteps(s.extension_dir || ""));
-    }
+  async function loadStatus() {
+    let s;
+    try {
+      const r = await fetch(`/api/status?token=${encodeURIComponent(token)}`);
+      s = await r.json();
+    } catch (e) { providerLabel.textContent = "status unavailable"; return; }
+    lastStatus = s;
+    providerLabel.textContent = aiLabel(s);
+    aiPill.classList.toggle("warn", !s.ai_ready);
+    notice.hidden = !!s.ai_ready || !s.onboarded;
+    statusListeners.forEach((fn) => { try { fn(s); } catch (e) { /* one view failing never breaks the rest */ } });
+    if (!guideChecked) { guideChecked = true; if (!s.onboarded) openGuide(1); }
+    clearTimeout(loadStatus.poll);
+    if (["starting", "opening", "needs_qr"].includes((s.whatsapp || {}).state)) loadStatus.poll = setTimeout(loadStatus, 4000);
+  }
+
+  // ---------- small helpers for the Setup sections ----------
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+  const button = (text, onClick, cls = "ghost small", label = "") => {
+    const b = el("button", cls, text); b.type = "button"; if (label) b.setAttribute("aria-label", label); b.addEventListener("click", onClick); return b;
+  };
+  const link = (text, href) => { const a = el("a", "", text); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; return a; };
+  async function api(path, body) {
+    const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    const r = await fetch(`${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`, opts);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    return d;
+  }
+
+  const option = (title, text) => {
+    const box = el("div", "option");
+    const body = el("div", "option-body");
+    box.append(el("h4", "", title), el("p", "hint", text), body);
+    return { box, body };
+  };
+  function fieldRow(labelText, controls, extra) {
+    const row = el("div", "field");
+    const wrap = el("div", "controls");
+    (Array.isArray(controls) ? controls : [controls]).forEach((c) => { if (c) wrap.append(c); });
+    if (extra) wrap.append(extra);
+    row.append(el("span", "field-label", labelText), wrap);
+    return row;
+  }
+  function toast(text) {
+    const t = el("div", "toast", text); t.setAttribute("role", "status");
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add("show"), 20);
+    setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 400); }, 4000);
   }
 
   function extensionSteps(folder) {
@@ -338,13 +363,6 @@
     return ol;
   }
 
-  const OTHER_FIELDS = [
-    ["EMAIL_ADDRESS", "Gmail address (to send/read email)", false],
-    ["EMAIL_APP_PASSWORD", "Gmail App Password (myaccount.google.com/apppasswords)", true],
-    ["RESUME_PATH", "Resume file path, e.g. C:\\Users\\you\\Documents\\resume.pdf", false],
-    ["VERCEL_TOKEN", "Vercel token (optional, for publishing websites)", true],
-  ];
-
   function describeCheck(c) {
     if (!c) return "";
     if (!c.ok) return `\u2716 ${c.title || c.provider}: ${c.error || "not working"}`;
@@ -352,46 +370,57 @@
     return `\u2714 ${c.title || c.provider} works with ${c.model}${tpm}: ${c.summary || ""}`;
   }
 
-  // ---------- small helpers for the Setup sections ----------
-  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
-  const button = (text, onClick, cls = "ghost small", label = "") => {
-    const b = el("button", cls, text); b.type = "button"; if (label) b.setAttribute("aria-label", label); b.addEventListener("click", onClick); return b;
+  // ---------- your AI: one shared view of what's connected (Setup and the guide both show it) ----------
+  const AI = {
+    ov: null, views: new Set(),
+    async refresh() {   // what's connected first (instant), then the sign-in checks (a few seconds)
+      try { this.set(await api("/api/ai?logins=0")); } catch (e) { /* the views keep what they had */ }
+      try { this.set(await api("/api/ai")); } catch (e) { /* the views keep what they had */ }
+    },
+    set(ov) { if (!ov) return; this.ov = { ...(this.ov || {}), ...ov }; this.views.forEach((v) => v(this.ov)); },
+    patch(name, value) { this.ov = this.ov || {}; this.ov[name] = { ...(this.ov[name] || {}), ...value }; this.views.forEach((v) => v(this.ov)); },
   };
-  const link = (text, href) => { const a = el("a", "", text); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; return a; };
-  async function api(path, body) {
-    const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-    const r = await fetch(`${path}?token=${encodeURIComponent(token)}`, opts);
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-    return d;
+  const modelLists = {};
+  const loginTimers = {};
+  function pollLogin(name, onDone, onFail) {
+    clearInterval(loginTimers[name]);
+    const started = Date.now();
+    loginTimers[name] = setInterval(async () => {
+      if (Date.now() - started > 10 * 60 * 1000) { clearInterval(loginTimers[name]); return; }
+      try {
+        const d = await api("/api/ai", { action: "login_status", provider: name });
+        AI.patch(name, { progress: d });
+        if (d.state === "done") { clearInterval(loginTimers[name]); onDone(d); AI.refresh(); loadStatus(); }
+        else if (d.state === "failed" || d.state === "idle") { clearInterval(loginTimers[name]); onFail(d); AI.refresh(); }
+      } catch (e) { clearInterval(loginTimers[name]); onFail({ error: e.message }); }
+    }, 2500);
   }
 
-  // ---------- Connect your AI: paste any key, or sign in with a subscription, then pick the model ----------
-  function connectBox() {
+  function connectBox(opts = {}) {
     const box = el("section", "connect-box"); box.setAttribute("aria-label", "Connect your AI");
     const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
     const list = el("div", "ai-list");
-    const services = {};
-    let logins = {};
-    const timers = {};
     const say = (text) => { msg.replaceChildren(); if (text) msg.appendChild(el("div", "", text)); };
     const showChecks = (checks, first) => {
       say(first || "");
       (checks || []).forEach((c) => msg.appendChild(el("div", c.ok ? "ok" : "missing", describeCheck(c))));
     };
-    const fail = (e) => say("\u2716 " + (e.message || e));
+    const fail = (e) => say("\u2716 " + ((e && (e.message || e.error)) || e));
+    const done = (d, text) => { showChecks((d || {}).checks, text); AI.set((d || {}).overview); AI.refresh(); loadStatus(); };
+    const connected = () => (((AI.ov || {}).connected) || []).map((r) => r.name);
 
-    // paste a key
+    // paste any key
+    const keyOpt = option("Paste an AI key", "OpenAI, Claude, Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI or Kiro: Karya works out which one it is.");
     const keyForm = el("form", "key-form"); keyForm.autocomplete = "off";
     const keyInput = el("input"); keyInput.type = "password"; keyInput.autocomplete = "off"; keyInput.spellcheck = false;
-    keyInput.placeholder = "Paste any AI key: OpenAI, Claude, Gemini, Groq, OpenRouter, DeepSeek, Mistral, xAI, Kiro...";
-    keyInput.setAttribute("aria-label", "Paste an AI key");
+    keyInput.placeholder = "Paste your key here"; keyInput.setAttribute("aria-label", "Paste an AI key");
     const keyBtn = el("button", "", "Connect"); keyBtn.type = "submit";
     keyForm.append(keyInput, keyBtn);
     const choose = el("div", "choose-service"); choose.hidden = true;
     const free = el("p", "hint");
     free.append("No key yet? Free ones: ", link("Gemini", "https://aistudio.google.com/apikey"), " \u00b7 ",
       link("Groq", "https://console.groq.com/keys"), " \u00b7 ", link("OpenRouter", "https://openrouter.ai/keys"));
+    keyOpt.body.append(keyForm, choose, free);
     const sendKey = async (service) => {
       const key = keyInput.value.trim();
       if (!key) { keyInput.focus(); return; }
@@ -399,39 +428,22 @@
       try {
         const d = await api("/api/ai", { action: "key", key, service: service || "" });
         if (d.choose) {
+          const titles = {}; (((AI.ov || {}).services) || []).forEach((s) => { titles[s.name] = s.title; });
           choose.replaceChildren(el("span", "", "Which service is this key from? "));
-          d.choose.forEach((name) => choose.append(button((services[name] || {}).title || name, () => sendKey(name), "ghost small")));
+          d.choose.forEach((name) => choose.append(button(titles[name] || name, () => sendKey(name), "ghost small")));
           choose.hidden = false; say(""); return;
         }
         keyInput.value = "";
-        showChecks(d.checks, `\u2714 ${d.title} connected.`);
-        render(d.overview); loadStatus();
+        done(d, `\u2714 ${d.title} connected.`);
       } catch (e) { fail(e); }
     };
     keyForm.addEventListener("submit", (e) => { e.preventDefault(); sendKey(""); });
 
-    // subscriptions
-    const kiroRow = el("div", "sub-row"), codexRow = el("div", "sub-row");
-    const pollLogin = (name, rowFill) => {
-      clearInterval(timers[name]);
-      const started = Date.now();
-      timers[name] = setInterval(async () => {
-        if (Date.now() - started > 10 * 60 * 1000) { clearInterval(timers[name]); return; }
-        try {
-          const d = await api("/api/ai", { action: "login_status", provider: name });
-          logins[name] = { ...(logins[name] || {}), progress: d };
-          if (d.state === "done") {
-            clearInterval(timers[name]);
-            showChecks(d.checks, `\u2714 Signed in. ${name === "kiro" ? "Kiro" : "Your ChatGPT plan"} is now Karya's first AI.`);
-            refresh(); loadStatus();
-          } else if (d.state === "failed" || d.state === "idle") {
-            clearInterval(timers[name]);
-            say(`\u2716 Sign-in didn't finish${d.error ? ": " + d.error : ""}. Try again.`);
-          }
-          rowFill();
-        } catch (e) { clearInterval(timers[name]); fail(e); }
-      }, 2500);
-    };
+    // plans you already pay for, and the free offline model
+    const kiro = option("Kiro", "Your Kiro plan. Sign in with Google, GitHub or AWS Builder ID: no key needed.");
+    const claude = option("Claude", "Your Claude plan (Pro, Max or Team) through Claude Code.");
+    const gpt = option("ChatGPT", "Your ChatGPT plan (Plus, Pro or Business) through the Codex app.");
+    const offline = option("Free, on this PC", "A small AI that runs on your PC with Ollama: free and private, slow without a graphics card.");
     const progressLine = (p) => {
       const line = el("div", "hint");
       if (!p || p.state !== "waiting") return line;
@@ -440,100 +452,327 @@
       if (p.url) line.append(link("Open the sign-in page", p.url));
       return line;
     };
-    const fillKiro = () => {
-      const info = logins.kiro || {};
-      const on = (list.dataset.names || "").split(",").includes("kiro");
-      kiroRow.replaceChildren(el("span", "sub-name", "Kiro subscription"));
-      if (on) kiroRow.append(el("span", "ok", info.key ? "\u2714 connected with your Kiro key" : "\u2714 signed in"));
-      else if (info.installed === false) kiroRow.append(el("span", "", "First install the Kiro CLI: "), link("kiro.dev/downloads", "https://kiro.dev/downloads"));
-      else {
-        kiroRow.append(el("span", "", "Sign in with: "));
-        [["google", "Google"], ["github", "GitHub"], ["builder", "AWS Builder ID"]].forEach(([method, label]) =>
-          kiroRow.append(button(label, async () => {
-            say("Opening the Kiro sign-in page...");
-            try { logins.kiro = { ...info, progress: await api("/api/ai", { action: "login", provider: "kiro", method }) }; fillKiro(); pollLogin("kiro", fillKiro); say(""); }
-            catch (e) { fail(e); }
-          }, "small", `Sign in to Kiro with ${label}`)));
-      }
-      kiroRow.append(progressLine(info.progress));
+    const startLogin = (name, method, label) => async () => {
+      say(`Opening the ${label} sign-in page...`);
+      try {
+        AI.patch(name, { progress: await api("/api/ai", { action: "login", provider: name, method: method || "" }) });
+        say("");
+        pollLogin(name, (d) => showChecks(d.checks, `\u2714 Signed in. ${label} is now Karya's first AI.`),
+          (d) => say(`\u2716 Sign-in didn't finish${d.error ? ": " + d.error : ""}. Try again.`));
+      } catch (e) { fail(e); }
     };
-    const fillCodex = () => {
-      const info = logins.codex || {};
-      const on = (list.dataset.names || "").split(",").includes("codex");
-      codexRow.replaceChildren(el("span", "sub-name", "ChatGPT plan (Plus, Pro, Business) via Codex"));
-      if (on) codexRow.append(el("span", "ok", "\u2714 connected"));
+    const use = (action, label) => async () => {
+      say(`Connecting ${label}...`);
+      try { done(await api("/api/ai", { action }), `\u2714 ${label} is connected.`); } catch (e) { fail(e); }
+    };
+    const checking = (b) => b.append(el("span", "hint", "Checking..."));
+    function fillKiro(ov) {
+      const info = ov.kiro || {}, b = kiro.body;
+      b.replaceChildren();
+      if (!ov.kiro && !connected().includes("kiro")) checking(b);
+      else if (connected().includes("kiro")) b.append(el("span", "ok", info.key ? "\u2714 Connected with your Kiro key" : "\u2714 Signed in"));
+      else if (info.installed === false) b.append("First install the Kiro CLI: ", link("kiro.dev/downloads", "https://kiro.dev/downloads"));
+      else {
+        const row = el("div", "option-actions");
+        [["google", "Google"], ["github", "GitHub"], ["builder", "AWS Builder ID"]].forEach(([m, label]) =>
+          row.append(button(label, startLogin("kiro", m, "Kiro"), "small", `Sign in to Kiro with ${label}`)));
+        b.append(row);
+      }
+      b.append(progressLine(info.progress));
+    }
+    function fillClaude(ov) {
+      const info = ov.claude || {}, b = claude.body;
+      b.replaceChildren();
+      if (!ov.claude && !connected().includes("claude")) checking(b);
+      else if (connected().includes("claude")) b.append(el("span", "ok", "\u2714 Connected"));
+      else if (info.installed === false) b.append("First install Claude Code: ", link("claude.com/claude-code", "https://claude.com/claude-code"));
+      else if (info.signed_in) {
+        b.append(button("Use Claude", use("use_claude", "Claude"), "small", "Use Claude"),
+          el("span", "hint", ` Claude Code is signed in on this PC (${info.method || "signed in"}).`));
+      } else b.append(button("Sign in with Claude", startLogin("claude", "", "Claude"), "small", "Sign in with Claude"));
+      b.append(progressLine(info.progress));
+    }
+    function fillGpt(ov) {
+      const info = ov.codex || {}, b = gpt.body;
+      b.replaceChildren();
+      if (!ov.codex && !connected().includes("codex")) checking(b);
+      else if (connected().includes("codex")) b.append(el("span", "ok", "\u2714 Connected"));
       else if (info.installed === false) {
         const cmd = "npm install -g @openai/codex";
-        codexRow.append(el("span", "", "First install the Codex CLI (needs Node.js from nodejs.org): "), el("code", "", cmd), " ",
+        b.append("First install the Codex app (needs ", link("Node.js", "https://nodejs.org"), "): ", el("code", "", cmd), " ",
           button("Copy", async (e) => { try { await navigator.clipboard.writeText(cmd); e.target.textContent = "Copied \u2714"; } catch (err) { e.target.textContent = "Select and copy"; } }, "ghost small", "Copy the install command"));
       } else if (info.signed_in) {
-        codexRow.append(button("Use my ChatGPT plan", async () => {
-          say("Connecting your ChatGPT plan...");
-          try { const d = await api("/api/ai", { action: "use_codex" }); showChecks(d.checks, "\u2714 Your ChatGPT plan is now Karya's first AI."); render(d.overview); loadStatus(); }
-          catch (e) { fail(e); }
-        }, "small", "Use my ChatGPT plan"), el("span", "hint", " Codex is already signed in on this PC."));
+        b.append(button("Use my ChatGPT plan", use("use_codex", "Your ChatGPT plan"), "small", "Use my ChatGPT plan"),
+          el("span", "hint", " Codex is already signed in on this PC."));
       } else {
-        const go = (device) => async () => {
-          say("Opening the ChatGPT sign-in page...");
-          try { logins.codex = { ...info, progress: await api("/api/ai", { action: "login", provider: "codex", method: device ? "device" : "" }) }; fillCodex(); pollLogin("codex", fillCodex); say(""); }
-          catch (e) { fail(e); }
-        };
-        codexRow.append(button("Sign in with ChatGPT", go(false), "small", "Sign in with ChatGPT"), " ",
-          button("use a code instead", go(true), "ghost small", "Sign in to ChatGPT with a code"));
+        const row = el("div", "option-actions");
+        row.append(button("Sign in with ChatGPT", startLogin("codex", "", "ChatGPT"), "small", "Sign in with ChatGPT"),
+          button("use a code instead", startLogin("codex", "device", "ChatGPT"), "ghost small", "Sign in to ChatGPT with a code"));
+        b.append(row);
       }
-      codexRow.append(progressLine(info.progress));
-    };
-
-    // the AIs Karya uses, in order, each with its model
-    const render = (ov) => {
-      (ov.services || []).forEach((s) => { services[s.name] = s; });
-      if (ov.kiro) logins.kiro = ov.kiro;
-      if (ov.codex) logins.codex = ov.codex;
-      const rows = ov.connected || [];
-      list.dataset.names = rows.map((r) => r.name).join(",");
+      b.append(progressLine(info.progress));
+    }
+    let ollamaTimer = null;
+    function pollOllama() {
+      clearInterval(ollamaTimer);
+      ollamaTimer = setInterval(async () => {
+        try {
+          const st = await api("/api/ai", { action: "ollama_status" });
+          AI.set({ ollama: st });
+          const state = (st.download || {}).state;
+          if (state !== "downloading") {
+            clearInterval(ollamaTimer);
+            if (state === "done") { say("\u2714 The offline AI is ready."); AI.refresh(); loadStatus(); }
+          }
+        } catch (e) { clearInterval(ollamaTimer); }
+      }, 2500);
+    }
+    function fillOffline(ov) {
+      const info = ov.ollama || {}, b = offline.body, dl = info.download || {};
+      b.replaceChildren();
+      if (!ov.ollama) checking(b);
+      else if (info.ready && connected().includes("ollama")) b.append(el("span", "ok", `\u2714 Ready (${info.model}). Karya uses it when your other AIs are busy, or on its own.`));
+      else if (info.ready) b.append(button("Use it", use("use_ollama", "The offline AI"), "small", "Use the offline AI"));
+      else if (dl.state === "downloading") b.append(el("span", "", `Downloading the model: ${dl.percent || 0}% (${dl.detail || "working"})...`));
+      else if (info.installed === false) {
+        b.append("First install Ollama (free): ", link("ollama.com/download", "https://ollama.com/download"), " ",
+          button("Check again", () => AI.refresh(), "ghost small", "Check for Ollama again"));
+      } else if (info.installed) {
+        b.append(button("Download the free model (about 3 GB)", async () => {
+          try { AI.set({ ollama: await api("/api/ai", { action: "ollama_download" }) }); pollOllama(); } catch (e) { fail(e); }
+        }, "small", "Download the free offline model"));
+        if (dl.state === "failed") b.append(el("div", "missing", `\u2716 ${dl.error || "The download stopped."} Try again.`));
+      }
+    }
+    function modelPicker(r) {
+      const pick = el("select"); pick.setAttribute("aria-label", `Model for ${r.title}`);
+      const add = (id, label) => { const o = el("option", "", label || id); o.value = id; pick.appendChild(o); return o; };
+      add(r.model, r.model);
+      pick.value = r.model;
+      modelLists[r.name] = modelLists[r.name] || api("/api/ai", { action: "models", provider: r.name }).catch(() => ({}));
+      modelLists[r.name].then((d) => {
+        (d.models || []).forEach((m) => { if (m.id !== r.model) add(m.id, m.description ? `${m.name}: ${m.description}` : m.name); });
+        add("__other", "Another model (type its name)...");
+      });
+      pick.addEventListener("change", async () => {
+        let model = pick.value;
+        if (model === "__other") { model = (prompt(`Model name for ${r.title}:`) || "").trim(); if (!model) { pick.value = r.model; return; } }
+        say(`Switching ${r.title} to ${model}...`);
+        try { done(await api("/api/ai", { action: "model", provider: r.name, model }), `\u2714 ${r.title} now uses ${model}.`); }
+        catch (e) { fail(e); pick.value = r.model; }
+      });
+      return pick;
+    }
+    function renderList(ov) {
+      const offlineReady = !!(ov.ollama || {}).ready;
+      // the offline AI is listed only once its model is downloaded (the "Free, on this PC" card covers the rest)
+      const rows = (ov.connected || []).filter((r) => r.name !== "ollama" || offlineReady);
       list.replaceChildren();
-      if (!rows.some((r) => r.name !== "ollama")) list.appendChild(el("p", "missing", "\u26A0 No AI connected yet. Paste a key below or sign in with a subscription."));
+      if (!ov.connected) { list.appendChild(el("p", "hint", "Checking your AI...")); return; }
+      if (!rows.length) list.appendChild(el("p", "missing", "\u26A0 No AI connected yet. Choose one below."));
       rows.forEach((r, i) => {
         const row = el("div", "ai-row");
         row.append(el("span", "ai-name", `${i + 1}. ${r.title}`),
-          el("span", "ai-how", r.how === "sign-in" ? "signed in" : r.how === "offline" ? "offline (slow)" : r.how));
-        const pick = el("select"); pick.setAttribute("aria-label", `Model for ${r.title}`);
-        const add = (id, label) => { const o = el("option", "", label || id); o.value = id; pick.appendChild(o); return o; };
-        add(r.model, r.model);
-        pick.value = r.model;
-        api("/api/ai", { action: "models", provider: r.name }).then((d) => {
-          (d.models || []).forEach((m) => { if (m.id !== r.model) add(m.id, m.description ? `${m.name} \u2014 ${m.description}` : m.name); });
-          add("__other", "Another model (type its name)...");
-        }).catch(() => add("__other", "Another model (type its name)..."));
-        pick.addEventListener("change", async () => {
-          let model = pick.value;
-          if (model === "__other") { model = (prompt(`Model name for ${r.title}:`) || "").trim(); if (!model) { pick.value = r.model; return; } }
-          say(`Switching ${r.title} to ${model}...`);
-          try { const d = await api("/api/ai", { action: "model", provider: r.name, model }); showChecks(d.checks, `\u2714 ${r.title} now uses ${model}.`); render(d.overview); loadStatus(); }
-          catch (e) { fail(e); pick.value = r.model; }
-        });
-        row.appendChild(pick);
+          el("span", "ai-how", r.how === "sign-in" ? "signed in" : r.how === "offline" ? "on this PC" : r.how));
+        row.appendChild(modelPicker(r));
         if (i > 0) row.appendChild(button("Use first", async () => {
-          try { const d = await api("/api/ai", { action: "first", provider: r.name }); render(d.overview); loadStatus(); say(`\u2714 ${r.title} goes first now.`); } catch (e) { fail(e); }
+          try { const d = await api("/api/ai", { action: "first", provider: r.name }); AI.set(d.overview); loadStatus(); say(`\u2714 ${r.title} goes first now.`); } catch (e) { fail(e); }
         }, "ghost small", `Use ${r.title} first`));
-        if (r.name !== "ollama") row.appendChild(button("Remove", async () => {
+        row.appendChild(button("Remove", async () => {
           if (!confirm(`Remove ${r.title} from Karya?`)) return;
-          try { const d = await api("/api/ai", { action: "remove", provider: r.name }); render(d.overview); loadStatus(); say(`Removed ${r.title}.`); } catch (e) { fail(e); }
+          try { const d = await api("/api/ai", { action: "remove", provider: r.name }); AI.set(d.overview); AI.refresh(); loadStatus(); say(`Removed ${r.title}.`); } catch (e) { fail(e); }
         }, "ghost small", `Remove ${r.title}`));
+        const check = lastStatus && lastStatus.checks && lastStatus.checks[r.name];
+        if (check) row.append(el("span", "ai-check " + (check.ok ? "ok" : "missing"), check.ok ? "\u2714 works" : `\u2716 ${check.error || "not working"}`));
         list.appendChild(row);
       });
-      fillKiro(); fillCodex();
-    };
-    const refresh = () => api("/api/ai").then(render).catch(fail);
+    }
+    const render = (ov) => { renderList(ov); fillKiro(ov); fillClaude(ov); fillGpt(ov); fillOffline(ov); };
+    const options = el("div", "options");
+    options.append(keyOpt.box, kiro.box, claude.box, gpt.box, offline.box);
+    if (opts.guide) box.append(list, options, msg);
+    else box.append(el("h3", "", "Your AI"), el("p", "hint", "Karya thinks with these, in this order, and moves to the next one when one is busy or out of credits."),
+      list, el("h3", "", "Add an AI"), el("p", "hint", "One is enough. A free key takes two minutes; a plan you already pay for needs only a sign-in."), options, msg);
+    AI.views.add(render);
+    render(AI.ov || {});
+    AI.refresh();
+    return box;
+  }
 
-    box.append(el("h3", "", "Connect your AI"),
-      el("p", "hint", "Karya needs an AI to think with. Paste any key you have, or sign in with a subscription you already pay for. Then pick the model. Karya uses them in this order and moves to the next one if one is busy."),
-      list, keyForm, choose, free, el("h4", "", "Or use a subscription you already have"), kiroRow, codexRow, msg);
+  // ---------- settings forms (each tab saves only its own fields) ----------
+  let settingsData = null;
+  const loadSettings = () => settingsData || (settingsData = fetch(`/api/settings?token=${encodeURIComponent(token)}`).then((r) => r.json()));
+  function fillValues(data, inputs, secrets, defaults) {
+    const values = (data && data.values) || {};
+    Object.entries(inputs).forEach(([key, input]) => {
+      const v = values[key] || {};
+      if (input.tagName === "SELECT") {
+        input.value = [...input.options].some((o) => o.value === v.value) ? v.value : ((defaults || {})[key] || input.options[0].value);
+        return;
+      }
+      if (v.value) input.value = v.value;
+      if (secrets.has(key) && v.set) input.placeholder = "saved \u2714 (type to replace)";
+    });
+  }
+  const submitSettings = (inputs, secrets, msg, after) => async (e) => {
+    e.preventDefault();
+    const body = {};
+    Object.entries(inputs).forEach(([key, input]) => { const v = input.value.trim(); if (v || !secrets.has(key)) body[key] = v; });
+    msg.textContent = "Saving...";
+    try {
+      const r = await fetch(`/api/settings?token=${encodeURIComponent(token)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (!r.ok) { msg.textContent = "Error: " + (d.error || r.status); return; }
+      msg.replaceChildren(el("div", "ok", "Saved \u2714"));
+      (d.checks || []).forEach((c) => msg.appendChild(el("div", c.ok ? "ok" : "missing", describeCheck(c))));
+      secrets.forEach((key) => { if (inputs[key].value) { inputs[key].value = ""; inputs[key].placeholder = "saved \u2714 (type to replace)"; } });
+      settingsData = null;
+      if (after) after(d);
+      loadStatus();
+    } catch (err) { msg.textContent = "Error: " + err; }
+  };
+  function settingsForm(title, intro, fields) {
+    const box = el("form", "settings"); box.autocomplete = "off";
+    if (title) box.append(el("h3", "", title));
+    if (intro) box.append(el("p", "hint", intro));
+    const inputs = {}, secrets = new Set(), defaults = {};
+    const rows = el("div", "fields");
+    fields.forEach((f) => {
+      let c;
+      if (f.options) {
+        c = el("select");
+        f.options.forEach(([v, t]) => { const o = el("option", "", t); o.value = v; c.appendChild(o); });
+        defaults[f.key] = f.def;
+      } else {
+        c = el("input"); c.type = f.secret ? "password" : "text"; c.autocomplete = "off"; c.spellcheck = false;
+        c.placeholder = f.placeholder || (f.secret ? "not set" : "");
+      }
+      c.setAttribute("aria-label", f.label);
+      inputs[f.key] = c;
+      if (f.secret) secrets.add(f.key);
+      rows.appendChild(fieldRow(f.label, c, f.link ? link(f.link[0], f.link[1]) : null));
+    });
+    const save = el("button", "", "Save"); save.type = "submit";
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    const actions = el("div", "form-actions"); actions.append(save, msg);
+    box.append(rows, actions);
+    loadSettings().then((d) => fillValues(d, inputs, secrets, defaults)).catch(() => {});
+    box.addEventListener("submit", submitSettings(inputs, secrets, msg));
+    return box;
+  }
+  function providersForm() {
+    const fold = el("details", "advanced");
+    fold.append(el("summary", "", "Every AI service, one by one (advanced: keys, models, order)"));
+    const box = el("form", "settings"); box.autocomplete = "off";
+    const prov = el("div", "providers");
+    const inputs = {}, secrets = new Set();
+    const mk = (key, secret, placeholder, label, cls) => {
+      const i = el("input"); i.type = secret ? "password" : "text"; i.autocomplete = "off"; i.spellcheck = false;
+      i.placeholder = placeholder || (secret ? "not set" : ""); i.setAttribute("aria-label", label);
+      if (cls) i.className = cls;
+      inputs[key] = i; if (secret) secrets.add(key);
+      return i;
+    };
+    loadSettings().then((data) => {
+      (data.providers || []).forEach((p) => {
+        prov.appendChild(fieldRow(p.title, [mk(p.key_env, true, "API key", `${p.title} API key`),
+          mk(p.model_env, false, p.default_model === "auto" ? "model: auto" : `model: ${p.default_model}`, `${p.title} model (optional)`, "model"),
+          link(p.free ? "get key (free plan)" : "get key", p.signup)]));
+      });
+      prov.appendChild(fieldRow("Any other OpenAI-compatible API", [mk("CUSTOM_BASE_URL", false, "https://your-endpoint/v1", "Custom base URL"),
+        mk("CUSTOM_API_KEY", true, "API key", "Custom API key"), mk("CUSTOM_MODEL", false, "model name", "Custom model", "model")]));
+      prov.appendChild(fieldRow("Order to use them in", [mk("LLM_PROVIDERS", false, "optional, e.g. anthropic,groq,ollama", "Provider order")]));
+      fillValues(data, inputs, secrets);
+    }).catch(() => {});
+    const save = el("button", "", "Save & check keys"); save.type = "submit";
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    const actions = el("div", "form-actions"); actions.append(save, msg);
+    box.append(prov, actions);
+    box.addEventListener("submit", submitSettings(inputs, secrets, msg, () => { Object.keys(modelLists).forEach((k) => delete modelLists[k]); AI.refresh(); }));
+    fold.appendChild(box);
+    return fold;
+  }
+
+  // ---------- about you ----------
+  const PROFILE_FIELDS = [
+    ["name", "Your name", "e.g. Asha Rao", "text", "name"],
+    ["email", "Your email", "e.g. asha@example.com", "email", "email"],
+    ["location", "City and country", "e.g. Pune, India", "text", "address-level2"],
+    ["phone", "Phone number (for job forms and WhatsApp)", "e.g. +91 98765 43210", "tel", "tel"],
+    ["target_roles", "Jobs you want (optional)", "e.g. product manager, business analyst", "text", "off"],
+  ];
+  function profileBox(opts = {}) {
+    const box = el("form", "profile-box"); box.autocomplete = "on";
+    const inputs = {};
+    const rows = el("div", "fields");
+    PROFILE_FIELDS.forEach(([key, label, placeholder, type, auto]) => {
+      const i = el("input"); i.type = type; i.placeholder = placeholder; i.autocomplete = auto; i.setAttribute("aria-label", label);
+      inputs[key] = i;
+      rows.appendChild(fieldRow(label, i));
+    });
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    if (!opts.guide) box.append(el("h3", "", "About you"), el("p", "hint", "Karya fills these in on job applications and emails. They stay on this PC."));
+    box.append(rows);
+    const save = async () => {
+      const profile = {};
+      Object.entries(inputs).forEach(([k, i]) => { if (i.value.trim()) profile[k] = i.value.trim(); });
+      if (!Object.keys(profile).length) return true;
+      try { await api("/api/onboarding", { action: "profile", profile }); msg.textContent = "\u2714 Saved."; loadStatus(); return true; }
+      catch (e) { msg.textContent = "\u2716 " + e.message; return false; }
+    };
+    if (!opts.guide) {
+      const b = el("button", "", "Save"); b.type = "submit";
+      const actions = el("div", "form-actions"); actions.append(b, msg);
+      box.append(actions);
+    } else box.append(msg);
+    box.addEventListener("submit", async (e) => { e.preventDefault(); await save(); });
+    api("/api/onboarding").then((st) => Object.entries(st.profile || {}).forEach(([k, v]) => { if (inputs[k] && !inputs[k].value) inputs[k].value = v; })).catch(() => {});
+    box.save = save;
+    return box;
+  }
+  function resumeBox() {
+    const box = el("div", "resume-box");
+    const state = el("p", "resume-state");
+    const file = el("input"); file.type = "file"; file.accept = ".pdf,.docx,.txt,.md"; file.hidden = true;
+    file.setAttribute("aria-label", "Your resume file");
+    const drop = el("div", "drop");
+    drop.append(button("Choose your resume", () => file.click(), "", "Choose your resume file"), el("span", "hint", " or drop a PDF or Word file here"));
+    const msg = el("div", "form-msg"); msg.setAttribute("role", "status");
+    let timer = null;
+    const show = (st) => {
+      const imp = st.resume_import || {};
+      if (imp.state === "reading") state.textContent = "Reading your resume...";
+      else if (imp.state === "done") state.textContent = "\u2714 Karya read your resume: it knows your experience, skills and projects.";
+      else if (imp.state === "later") state.textContent = "\u2714 Saved. " + (imp.error || "");
+      else if (imp.state === "failed") state.textContent = "\u2716 " + (imp.error || "Karya couldn't read it.");
+      else state.textContent = st.resume ? `\u2714 Your resume: ${st.resume_file || "saved"}` : "No resume yet. Karya tailors it for every job you apply to.";
+      state.className = "resume-state " + (imp.state === "failed" ? "missing" : (st.resume || imp.state === "later") ? "ok" : "");
+      clearTimeout(timer);
+      if (imp.state === "reading") timer = setTimeout(refresh, 2000);
+    };
+    const refresh = () => api("/api/onboarding").then(show).catch(() => {});
+    const upload = (f) => {
+      if (!f) return;
+      if (f.size > 8 * 1024 * 1024) { msg.textContent = "\u2716 That file is bigger than 8 MB."; return; }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        msg.textContent = `Uploading ${f.name}...`;
+        try {
+          show(await api("/api/onboarding", { action: "resume", filename: f.name, data: String(reader.result).split(",")[1] || "" }));
+          msg.textContent = ""; loadStatus();
+        } catch (e) { msg.textContent = "\u2716 " + e.message; }
+      };
+      reader.readAsDataURL(f);
+    };
+    file.addEventListener("change", () => upload(file.files[0]));
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files[0]); });
+    box.append(el("h4", "", "Your resume"), state, drop, file, msg);
     refresh();
     return box;
   }
 
-  // ---------- Your phone: tasks from WhatsApp ----------
   function phoneBox() {
     const box = el("section", "phone-box"); box.setAttribute("aria-label", "Give Karya tasks from WhatsApp");
     const state = el("p", "phone-state");
@@ -574,14 +813,14 @@
       state.textContent = text; state.className = "phone-state " + (st === "ready" ? "ok" : st === "error" ? "missing" : "");
       num.hidden = !(st === "off" || st === "error"); go.hidden = !(st === "off" || st === "error"); off.hidden = st === "off";
     };
-    box.append(el("h3", "", "Give Karya tasks from your phone (WhatsApp)"),
-      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat): Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that one chat is read. Logins and passwords never go over WhatsApp. Karya has to be running on this PC to read it: turn on \"Start Karya when I sign in to Windows\" and it always is while the PC is on. Messages you send while it's off are done when it starts, if they're under 6 hours old. Its WhatsApp window must stay open (it can sit behind other windows)."),
+    box.append(el("h3", "", "Tasks from your phone (WhatsApp)"),
+      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat). Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that chat is read, and passwords never go over WhatsApp. Karya must be running on this PC, so turn on \"Start Karya when I sign in to Windows\" below."),
       state, row, auto, msg);
     box.update({ state: "off" });
+    onStatus((s) => { box.update(s.whatsapp || {}); box.setAutostart(s.autostart); });
     return box;
   }
 
-  // ---------- Bots ----------
   function agentsBox() {
     const box = el("section", "agents-box"); box.setAttribute("aria-label", "Your bots");
     const list = el("ul", "agent-list");
@@ -646,142 +885,19 @@
     });
     box.setAwake = (on) => { awakeBox.checked = !!on; };
     box.append(el("h3", "", "Your bots"),
-      el("p", "hint", "Bots are named helpers that work for you in the background, like Grok Bots or Dots, while you keep chatting. A bot can do anything Karya can: find and apply to jobs, research, watch markets, read and send email, post, fix PC problems, build websites. Give one a task here, write \"@Name task\" in the chat, or message \"@Name task\" on WhatsApp. It reports here and on WhatsApp, and remembers what it did. Two bots work at a time; they take turns with you on the browser."),
+      el("p", "hint", "Named helpers that work in the background while you keep chatting, like Grok Bots or Dots. A bot can do anything Karya can. Give one a task here, or write \"@Name task\" in the chat or on WhatsApp. It reports back and remembers what it did."),
       list, el("h4", "", "Make a bot"), make, awake, msg);
     box.update([]);
-    return box;
-  }
-
-  function settingsForm() {
-    const box = document.createElement("form");
-    box.className = "settings";
-    box.autocomplete = "off";
-    const h = document.createElement("h3"); h.textContent = "Settings (saved only on this PC)";
-    const intro = document.createElement("p"); intro.className = "hint";
-    intro.textContent = "Add any AI key you have, free or paid. Karya checks each key, learns its limits and adapts: small free plans get small requests, big paid plans run at full speed.";
-    const provBox = document.createElement("div"); provBox.className = "providers";
-    const provFold = document.createElement("details"); provFold.className = "advanced";
-    const provSum = document.createElement("summary"); provSum.textContent = "Every AI service, one by one (advanced: keys, models, order)";
-    provFold.append(provSum, provBox);
-    const otherBox = document.createElement("div");
-    const inputs = {};
-    const secrets = new Set();
-    const mkInput = (key, secret, placeholder) => {
-      const input = document.createElement("input"); input.type = secret ? "password" : "text"; input.autocomplete = "off"; input.spellcheck = false;
-      input.placeholder = placeholder || (secret ? "not set" : "");
-      inputs[key] = input; if (secret) secrets.add(key);
-      return input;
-    };
-    const row = (labelText, ...controls) => {
-      const r = document.createElement("div"); r.className = "field";
-      const span = document.createElement("span"); span.textContent = labelText;
-      const wrap = document.createElement("div"); wrap.className = "controls"; wrap.append(...controls);
-      r.append(span, wrap); return r;
-    };
-    fetch(`/api/settings?token=${encodeURIComponent(token)}`).then((r) => r.json()).then((data) => {
-      const values = data.values || {};
-      (data.providers || []).forEach((p) => {
-        const key = mkInput(p.key_env, true, "API key");
-        key.setAttribute("aria-label", `${p.title} API key`);
-        const model = mkInput(p.model_env, false, p.default_model === "auto" ? "model: auto" : `model: ${p.default_model}`);
-        model.setAttribute("aria-label", `${p.title} model (optional)`);
-        model.className = "model";
-        const link = document.createElement("a"); link.href = p.signup; link.target = "_blank"; link.rel = "noopener noreferrer";
-        link.textContent = p.free ? "get key (free plan)" : "get key";
-        provBox.appendChild(row(p.title, key, model, link));
-      });
-      const cBase = mkInput("CUSTOM_BASE_URL", false, "https://your-endpoint/v1"); cBase.setAttribute("aria-label", "Custom base URL");
-      const cKey = mkInput("CUSTOM_API_KEY", true, "API key"); cKey.setAttribute("aria-label", "Custom API key");
-      const cModel = mkInput("CUSTOM_MODEL", false, "model name"); cModel.setAttribute("aria-label", "Custom model"); cModel.className = "model";
-      provBox.appendChild(row("Any other OpenAI-compatible API", cBase, cKey, cModel));
-      const order = mkInput("LLM_PROVIDERS", false, "optional, e.g. anthropic,groq,ollama");
-      order.setAttribute("aria-label", "Provider order");
-      provBox.appendChild(row("Order to use them in", order));
-      OTHER_FIELDS.forEach(([key, label, secret]) => {
-        const input = mkInput(key, secret);
-        input.setAttribute("aria-label", label);
-        otherBox.appendChild(row(label, input));
-      });
-      const mode = document.createElement("select"); mode.setAttribute("aria-label", "Which browser Karya uses");
-      [["auto", "Your Chrome when the extension is connected, else Karya's own window"], ["chrome", "Only your Chrome (Karya Browser Link)"],
-       ["karya", "Only Karya's own Chrome window"]].forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; mode.appendChild(o); });
-      inputs.BROWSER_MODE = mode;
-      otherBox.appendChild(row("Browser Karya uses", mode));
-      const autoSubmit = document.createElement("select"); autoSubmit.setAttribute("aria-label", "When Karya applies to jobs you pick");
-      [["false", "Ask me before each Submit"], ["true", "Submit the jobs I pick without asking (checks still run)"]]
-        .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; autoSubmit.appendChild(o); });
-      inputs.AUTO_SUBMIT_PICKED = autoSubmit;
-      otherBox.appendChild(row("When Karya applies to jobs you pick", autoSubmit));
-      const fullAccess = document.createElement("select"); fullAccess.setAttribute("aria-label", "Full access (do everything without asking)");
-      [["false", "Off - ask before sending, posting, applying, paying, deleting"],
-       ["true", "Full access - do everything without asking (checks still run; payments & account-deletes still ask)"]]
-        .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; fullAccess.appendChild(o); });
-      inputs.KARYA_FULL_ACCESS = fullAccess;
-      otherBox.appendChild(row("Full access (autopilot)", fullAccess));
-      const payFloor = document.createElement("select"); payFloor.setAttribute("aria-label", "In full access, also allow payments and account deletes");
-      [["false", "No - still ask me before paying or deleting an account (recommended)"],
-       ["true", "Yes - in full access, also pay and delete without asking (risky)"]]
-        .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; payFloor.appendChild(o); });
-      inputs.KARYA_FULL_ACCESS_PAYMENTS = payFloor;
-      otherBox.appendChild(row("In full access, payments & account deletes", payFloor));
-      const reuse = document.createElement("select"); reuse.setAttribute("aria-label", "Reuse one login across sites");
-      [["false", "No - ask me for each site's login"],
-       ["true", "Yes - reuse my primary login to sign in and create accounts without asking"]]
-        .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; reuse.appendChild(o); });
-      inputs.KARYA_REUSE_LOGIN = reuse;
-      otherBox.appendChild(row("Reuse one login across sites", reuse));
-      const mcpOn = document.createElement("select"); mcpOn.setAttribute("aria-label", "Let other AI apps and CLIs use Karya (MCP)");
-      [["true", "Yes - apps I add Karya to can use it (approvals still apply)"], ["false", "No - switched off"]]
-        .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; mcpOn.appendChild(o); });
-      inputs.KARYA_MCP_ENABLED = mcpOn;
-      otherBox.appendChild(row("Let other AI apps and CLIs use Karya (MCP)", mcpOn));
-      [["KARYA_MCP_TOOLS", "Tools they get (empty = the default 33; or e.g. browser,email - or all)"],
-       ["KARYA_MAX_EMAILS_PER_DAY", "Most emails per day (default 40)"],
-       ["KARYA_MAX_POSTS_PER_DAY", "Most social posts per day (default 10)"],
-       ["KARYA_MAX_APPLICATIONS_PER_DAY", "Most job applications per day (default 30)"]].forEach(([key, label]) => {
-        const input = mkInput(key, false); input.setAttribute("aria-label", label);
-        otherBox.appendChild(row(label, input));
-      });
-      Object.entries(values).forEach(([key, v]) => {
-        const input = inputs[key]; if (!input) return;
-        if (v.value) input.value = v.value;
-        if (secrets.has(key) && v.set) input.placeholder = "saved \u2714 (type to replace)";
-      });
-      if (!mode.value) mode.value = "auto";
-      if (!["true", "false"].includes(autoSubmit.value)) autoSubmit.value = "false";
-      if (!["true", "false"].includes(mcpOn.value)) mcpOn.value = "true";
-      [fullAccess, payFloor, reuse].forEach((sel) => { if (!["true", "false"].includes(sel.value)) sel.value = "false"; });
-    }).catch(() => {});
-    const save = document.createElement("button"); save.type = "submit"; save.textContent = "Save & check keys";
-    const msg = document.createElement("div"); msg.className = "form-msg"; msg.setAttribute("role", "status");
-    intro.textContent = "Email, resume, browser and safety settings. (To add an AI, use Connect your AI above.)";
-    box.append(h, intro, provFold, otherBox, save, msg);
-    box.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const body = {};
-      Object.entries(inputs).forEach(([key, input]) => { const v = input.value.trim(); if (v || !secrets.has(key)) body[key] = v; });
-      msg.textContent = "Saving and checking keys...";
-      try {
-        const r = await fetch(`/api/settings?token=${encodeURIComponent(token)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        const d = await r.json();
-        if (!r.ok) { msg.textContent = "Error: " + (d.error || r.status); return; }
-        msg.replaceChildren();
-        const done = document.createElement("div"); done.textContent = "Saved \u2714"; msg.appendChild(done);
-        (d.checks || []).forEach((c) => { const line = document.createElement("div"); line.className = c.ok ? "ok" : "missing"; line.textContent = describeCheck(c); msg.appendChild(line); });
-        secrets.forEach((key) => { if (inputs[key].value) { inputs[key].value = ""; inputs[key].placeholder = "saved \u2714 (type to replace)"; } });
-        loadStatus();
-      } catch (err) { msg.textContent = "Error: " + err; }
-    });
+    onStatus((s) => { box.update(s.agents || []); box.setAwake(s.keep_awake); });
     return box;
   }
 
   function mcpBox() {
     const box = document.createElement("div"); box.className = "mcp-box";
-    const h = document.createElement("h3"); h.textContent = "Use Karya from other AI apps and CLIs (MCP)";
+    const h = document.createElement("h3"); h.textContent = "Add Karya to your AI apps";
     const intro = document.createElement("p"); intro.className = "hint";
-    intro.textContent = "Claude Desktop, Cursor, Kiro, VS Code, Windsurf, OpenClaw, Claude Code, Codex, Gemini CLI and other MCP apps " +
-      "can use Karya's browser, email, job and posting tools with their own AI. Karya still runs every check and asks you " +
-      "before sending, posting, submitting or paying. The Chrome extension is optional: without it Karya uses its own Chrome window.";
+    intro.textContent = "One click adds Karya to an app on this PC. Restart the app afterwards, then ask it things like \"use Karya to find PM jobs and apply\". " +
+      "Karya still checks everything and asks you (in Karya's window, or inside the app) before it sends, posts, submits or pays.";
     const body = document.createElement("details"); body.className = "advanced";
     const bodySum = document.createElement("summary"); bodySum.textContent = "Add it by hand (other apps, or if a button doesn't work)";
     body.appendChild(bodySum);
@@ -807,7 +923,7 @@
           }
           appsList.appendChild(li);
         });
-        if (!appsList.children.length) appsList.appendChild(el("li", "hint", "No AI apps found on this PC. Use the steps below for others."));
+        if (!appsList.children.length) appsList.appendChild(el("li", "hint", "No AI apps found on this PC. For others, use the steps below."));
       } catch (e) { appsList.replaceChildren(el("li", "missing", "Couldn't check your AI apps: " + e.message)); }
     };
     loadApps();
@@ -842,7 +958,9 @@
 
   function accountsBox() {
     const box = document.createElement("div"); box.className = "accounts";
-    const h = document.createElement("h3"); h.textContent = "Accounts (passwords are encrypted on this PC and never sent to the AI)";
+    const h = document.createElement("h3"); h.textContent = "Saved logins";
+    const note = document.createElement("p"); note.className = "hint";
+    note.textContent = "Passwords are encrypted on this PC with Windows and never go to the AI. Karya types them only on the site they belong to.";
     const list = document.createElement("ul"); list.className = "account-list";
     const refresh = async () => {
       list.replaceChildren();
@@ -852,7 +970,7 @@
         if (!d.accounts || !d.accounts.length) { const li = document.createElement("li"); li.textContent = "No saved accounts yet."; list.appendChild(li); }
         (d.accounts || []).forEach((a) => {
           const li = document.createElement("li");
-          const t = document.createElement("span"); t.textContent = `${a.site} \u2014 ${a.username || "(no username)"}${a.has_password ? " \u2022 password saved" : ""}`;
+          const t = document.createElement("span"); t.textContent = `${a.site}: ${a.username || "(no username)"}${a.has_password ? " \u2022 password saved" : ""}`;
           const del = document.createElement("button"); del.type = "button"; del.className = "ghost small"; del.textContent = "Remove";
           del.setAttribute("aria-label", `Remove saved account for ${a.site}`);
           del.onclick = async () => {
@@ -880,8 +998,251 @@
       refresh();
     });
     refresh();
-    box.append(h, list, form);
+    box.append(h, note, list, form);
     return box;
+  }
+
+  // ---------- Setup: one window with tabs ----------
+  const TABS = [
+    ["ai", "AI", "What Karya thinks with"],
+    ["you", "About you", "Your details and resume"],
+    ["phone", "Phone & bots", "WhatsApp and your bots"],
+    ["apps", "Other AI apps", "Claude Code, Cursor, Codex..."],
+    ["browser", "Browser & logins", "Your Chrome, saved logins"],
+    ["more", "Safety & more", "Approvals, limits, extras"],
+  ];
+  const panels = {};
+  let setupBuilt = false, currentTab = "ai";
+  const linkTo = (text, tab) => button(text, () => showTab(tab), "link", text);
+  function aiTab() {
+    const tip = el("p", "hint tip");
+    tip.append("Using Cursor, Claude Code, Codex or VS Code? You can also add Karya to them in ", linkTo("Other AI apps", "apps"),
+      ": then you chat there and their AI uses Karya's tools.");
+    return [connectBox(), tip, providersForm()];
+  }
+  function youTab() {
+    return [profileBox(), resumeBox(), settingsForm("Email for sending",
+      "Karya sends and reads email with your Gmail address and a Gmail App Password (a separate password only for Karya). Without them, Karya uses Gmail in its browser.",
+      [{ key: "EMAIL_ADDRESS", label: "Gmail address (to send/read email)", placeholder: "you@gmail.com" },
+       { key: "EMAIL_APP_PASSWORD", label: "Gmail App Password", secret: true, link: ["make one", "https://myaccount.google.com/apppasswords"] }])];
+  }
+  function appsTab() {
+    const two = el("section", "explain");
+    const ul = el("ul", "plain");
+    ul.append(el("li", "", "As Karya's brain (the AI tab): you chat here, the app's plan does the thinking and Karya does the work."),
+      el("li", "", "Inside the app (below): you chat in Claude Code, Cursor, Codex, Kiro or VS Code, and their AI uses Karya's tools: the browser, your logins, email, jobs and resumes."));
+    two.append(el("h3", "", "Two ways to use Karya with other AI apps"), ul);
+    return [two, mcpBox(), settingsForm("Access", "", [
+      { key: "KARYA_MCP_ENABLED", label: "Let other AI apps use Karya", options: [["true", "Yes (Karya still asks before sending, posting or paying)"], ["false", "No, switched off"]], def: "true" },
+      { key: "KARYA_MCP_TOOLS", label: "Tools they get (empty = the default set; or e.g. browser,email, or all)" }])];
+  }
+  function browserTab() {
+    const box = el("section", "browser-box");
+    const state = el("p", "browser-state");
+    const steps = el("div");
+    box.append(el("h3", "", "Your Chrome"), el("p", "hint", "Karya can work in your everyday Chrome, with the logins you already have, through a small extension. Without it, Karya uses its own Chrome window."), state, steps);
+    onStatus((s) => {
+      const bl = s.browser_link || {};
+      steps.replaceChildren();
+      if (s.browser_mode === "karya") { state.textContent = "Karya uses its own Chrome window (change it below)."; state.className = "browser-state ok"; }
+      else if (bl.connected) {
+        state.textContent = `\u2714 Your ${bl.browser || "Chrome"} is connected. Karya works in its own tab there (the purple "Karya" tab group).` +
+          (bl.needs_reload ? " An update is ready: open chrome://extensions and press the reload button on Karya Browser Link." : "");
+        state.className = "browser-state ok";
+      } else {
+        state.textContent = "Not linked yet. Add the extension once, it takes a minute:"; state.className = "browser-state missing";
+        steps.appendChild(extensionSteps(s.extension_dir || ""));
+      }
+    });
+    return [box, settingsForm("Which browser Karya uses", "", [{ key: "BROWSER_MODE", label: "Browser Karya uses", def: "auto",
+      options: [["auto", "Your Chrome when the extension is connected, else Karya's own window"], ["chrome", "Only your Chrome (Karya Browser Link)"], ["karya", "Only Karya's own Chrome window"]] }]),
+      accountsBox()];
+  }
+  function moreTab() {
+    const approvals = settingsForm("Approvals", "Karya asks before it sends, posts, submits, pays or deletes, unless you change it here.", [
+      { key: "AUTO_SUBMIT_PICKED", label: "When Karya applies to jobs you pick", def: "false", options: [["false", "Ask me before each Submit"], ["true", "Submit the jobs I pick without asking (checks still run)"]] },
+      { key: "KARYA_FULL_ACCESS", label: "Full access (autopilot)", def: "false", options: [["false", "Off: ask before sending, posting, applying, paying, deleting"], ["true", "On: do everything without asking (payments and account deletes still ask)"]] },
+      { key: "KARYA_FULL_ACCESS_PAYMENTS", label: "In full access, payments and account deletes", def: "false", options: [["false", "Still ask me (recommended)"], ["true", "Do them without asking too (risky)"]] },
+      { key: "KARYA_REUSE_LOGIN", label: "Reuse one login across sites", def: "false", options: [["false", "No, ask me for each site"], ["true", "Yes, use my main login to sign in and sign up"]] }]);
+    const limits = settingsForm("Daily limits", "They keep your accounts from looking like spam.", [
+      { key: "KARYA_MAX_EMAILS_PER_DAY", label: "Most emails per day", placeholder: "40" },
+      { key: "KARYA_MAX_POSTS_PER_DAY", label: "Most social posts per day", placeholder: "10" },
+      { key: "KARYA_MAX_APPLICATIONS_PER_DAY", label: "Most job applications per day", placeholder: "30" }]);
+    const sites = settingsForm("Websites", "Optional: Karya can publish the websites it builds for you.", [
+      { key: "VERCEL_TOKEN", label: "Vercel token", secret: true, link: ["get one", "https://vercel.com/account/tokens"] }]);
+    const again = el("section", "guide-again");
+    again.append(el("h3", "", "Welcome guide"), el("p", "hint", "The three steps Karya shows the first time: your AI, about you, extras."),
+      button("Show the welcome guide again", async () => { try { await api("/api/onboarding", { action: "reset" }); } catch (e) { /* still show it */ } closeSetup(); openGuide(1); }, "ghost", "Show the welcome guide again"));
+    return [approvals, limits, sites, again];
+  }
+  function showTab(id) {
+    currentTab = id;
+    Object.entries(panels).forEach(([key, p]) => {
+      const on = key === id;
+      p.tab.setAttribute("aria-selected", on ? "true" : "false");
+      p.tab.tabIndex = on ? 0 : -1;
+      p.view.hidden = !on;
+    });
+  }
+  function buildSetup() {
+    const root = $("setup-panel");
+    root.replaceChildren();
+    const card = el("div", "setup-card");
+    const head = el("div", "setup-head");
+    head.append(el("h2", "", "Setup"), button("\u2715", () => closeSetup(), "ghost icon", "Close Setup"));
+    const body = el("div", "setup-body");
+    const tabs = el("div", "setup-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-orientation", "vertical");
+    const views = el("div", "setup-views");
+    TABS.forEach(([id, label, sub], index) => {
+      const tab = el("button", "setup-tab"); tab.type = "button"; tab.id = `tab-${id}`;
+      tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", `view-${id}`);
+      const dot = el("span", "tab-dot"); dot.setAttribute("aria-hidden", "true");
+      tab.append(dot, el("span", "tab-label", label), el("span", "tab-sub", sub));
+      tab.addEventListener("click", () => showTab(id));
+      tab.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        e.preventDefault();
+        const nextId = TABS[(index + (e.key === "ArrowDown" ? 1 : TABS.length - 1)) % TABS.length][0];
+        showTab(nextId); panels[nextId].tab.focus();
+      });
+      tabs.appendChild(tab);
+      const view = el("section", "setup-view"); view.id = `view-${id}`;
+      view.setAttribute("role", "tabpanel"); view.setAttribute("aria-labelledby", tab.id); view.hidden = true;
+      views.appendChild(view);
+      panels[id] = { tab, view, dot };
+    });
+    body.append(tabs, views);
+    card.append(head, body);
+    root.appendChild(card);
+    root.addEventListener("click", (e) => { if (e.target === root) closeSetup(); });
+    panels.ai.view.append(...aiTab());
+    panels.you.view.append(...youTab());
+    panels.phone.view.append(phoneBox(), agentsBox());
+    panels.apps.view.append(...appsTab());
+    panels.browser.view.append(...browserTab());
+    panels.more.view.append(...moreTab());
+    setupBuilt = true;
+    onStatus((s) => {
+      const mark = (id, state) => { panels[id].dot.className = "tab-dot" + (state ? " " + state : ""); };
+      mark("ai", s.ai_ready ? "ok" : "bad");
+      mark("you", s.you && s.you.name && s.you.resume ? "ok" : "warn");
+      mark("phone", (s.whatsapp || {}).state === "ready" ? "ok" : "");
+      mark("browser", (s.browser_link || {}).connected || s.browser_mode === "karya" ? "ok" : "warn");
+    });
+  }
+  function openSetup(tab) {
+    if (!setupBuilt) buildSetup();
+    $("setup-panel").hidden = false;
+    showTab(tab || currentTab);
+    panels[currentTab].tab.focus();
+  }
+  function closeSetup() { $("setup-panel").hidden = true; }
+
+  // ---------- the first-run guide: what someone sees right after downloading Karya ----------
+  let guide = null;
+  function openGuide(step) {
+    if (!guide) guide = buildGuide();
+    $("guide").hidden = false;
+    guide.go(step || 1);
+  }
+  function extrasList() {
+    const wrap = el("div", "extras");
+    const wa = el("div", "extra");
+    const waState = el("span", "hint");
+    const waBtn = button("Connect WhatsApp", async () => {
+      waBtn.disabled = true; waState.textContent = " Opening WhatsApp Web in its own window...";
+      try {
+        const d = await api("/api/phone", { action: "connect" });
+        if (d.state === "error") waState.textContent = " \u2716 " + (d.detail || "It didn't start.");
+      } catch (e) { waState.textContent = " \u2716 " + e.message; }
+      waBtn.disabled = false; loadStatus();
+    }, "small", "Connect WhatsApp");
+    wa.append(el("h4", "", "Tasks from your phone"), el("p", "hint", "Message yourself on WhatsApp: Karya does the task, asks you there before anything risky and reports back."), waBtn, waState);
+    const auto = el("label", "toggle-row");
+    const autoBox = el("input"); autoBox.type = "checkbox"; autoBox.setAttribute("aria-label", "Start Karya when I sign in to Windows");
+    auto.append(autoBox, " Start Karya when I sign in to Windows, so WhatsApp tasks and bots work without opening it");
+    autoBox.addEventListener("change", async () => {
+      try { const d = await api("/api/autostart", { on: autoBox.checked }); autoBox.checked = !!d.on; }
+      catch (e) { autoBox.checked = !autoBox.checked; toast("\u2716 " + e.message); }
+    });
+    const chrome = el("div", "extra");
+    const chromeState = el("p", "hint");
+    const chromeSteps = el("div");
+    chrome.append(el("h4", "", "Your own Chrome"), el("p", "hint", "Karya can work in your everyday Chrome, with your logins, through a small extension."), chromeState, chromeSteps);
+    onStatus((s) => {
+      const st = (s.whatsapp || {}).state || "off";
+      if (st !== "off" || !waState.textContent.includes("\u2716")) {
+        waState.textContent = { ready: " \u2714 Linked.", needs_qr: " Scan the code in the WhatsApp window: on your phone open WhatsApp > Settings > Linked devices > Link a device.",
+          starting: " Opening WhatsApp Web...", opening: " Opening your chat...", error: " \u2716 " + ((s.whatsapp || {}).detail || "") }[st] || waState.textContent;
+      }
+      waBtn.hidden = st === "ready";
+      auto.hidden = !(s.autostart && s.autostart.supported);
+      autoBox.checked = !!(s.autostart && s.autostart.on);
+      chromeSteps.replaceChildren();
+      if ((s.browser_link || {}).connected) chromeState.textContent = "\u2714 Connected.";
+      else { chromeState.textContent = ""; chromeSteps.appendChild(extensionSteps(s.extension_dir || "")); }
+    });
+    wrap.append(wa, auto, chrome);
+    return wrap;
+  }
+  function buildGuide() {
+    const root = $("guide");
+    root.replaceChildren();
+    const card = el("div", "guide-card");
+    const top = el("div", "guide-top");
+    const brand = el("div", "guide-brand");
+    const logo = el("img", "guide-logo"); logo.src = "/static/logo.svg"; logo.alt = ""; logo.width = 44; logo.height = 44;
+    const words = el("div");
+    words.append(el("h2", "", "Welcome to Karya"), el("p", "hint", "Three quick steps. You can skip any of them and change everything later in Setup."));
+    brand.append(logo, words);
+    const close = () => { root.hidden = true; };
+    top.append(brand, button("Skip setup", async () => {
+      close();
+      try { await api("/api/onboarding", { action: "skip" }); } catch (e) { /* closed anyway */ }
+      loadStatus();
+    }, "ghost small", "Skip setup"));
+    const progress = el("ol", "guide-progress");
+    ["Your AI", "About you", "Extras"].forEach((name, i) => progress.appendChild(el("li", "", `${i + 1}. ${name}`)));
+    const s1 = el("section", "guide-step");
+    s1.append(el("h3", "", "Connect an AI"),
+      el("p", "hint", "Karya needs an AI to think with. Pick any one: a free key, a plan you already pay for, or the free offline model. You can add more later."),
+      connectBox({ guide: true }));
+    const s2 = el("section", "guide-step");
+    const prof = profileBox({ guide: true });
+    s2.append(el("h3", "", "About you"), el("p", "hint", "Karya fills these in on job applications and emails. They stay on this PC."), prof, resumeBox());
+    const s3 = el("section", "guide-step");
+    s3.append(el("h3", "", "Extras (all optional)"), el("p", "hint", "Turn these on now or any time in Setup."), extrasList());
+    const steps = [s1, s2, s3];
+    const nav = el("div", "guide-nav");
+    const back = button("Back", () => go(current - 1), "ghost", "Back");
+    const next = el("button", "guide-next", "Next"); next.type = "button";
+    nav.append(back, next);
+    card.append(top, progress, ...steps, nav);
+    root.appendChild(card);
+    let current = 1;
+    const label = () => current === 3 ? "Finish" : current === 1 && !(lastStatus && lastStatus.ai_ready) ? "Skip for now" : "Next";
+    function go(n) {
+      current = Math.max(1, Math.min(3, n));
+      steps.forEach((s, i) => { s.hidden = i !== current - 1; });
+      const skipped = (i) => i === 0 && !(lastStatus && lastStatus.ai_ready);
+      [...progress.children].forEach((li, i) => {
+        li.className = i + 1 === current ? "now" : i + 1 < current ? (skipped(i) ? "skipped" : "done") : "";
+      });
+      back.hidden = current === 1;
+      next.textContent = label();
+      card.scrollTop = 0;
+    }
+    next.addEventListener("click", async () => {
+      if (current === 2 && !(await prof.save())) return;
+      if (current < 3) { go(current + 1); return; }
+      close();
+      try { await api("/api/onboarding", { action: "done" }); } catch (e) { /* closed anyway */ }
+      loadStatus();
+      toast("You're set. Ask Karya anything below.");
+      input.focus();
+    });
+    onStatus(() => { next.textContent = label(); });
+    return { go };
   }
 
   function settleCard(selector, id, text, ok) {
@@ -1060,10 +1421,15 @@
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; });
   stopBtn.addEventListener("click", () => send({ type: "stop" }));
   $("new-chat").addEventListener("click", () => { if (confirm("Start a new chat? The current conversation will be cleared.")) send({ type: "reset" }); });
-  $("setup-btn").addEventListener("click", () => { const p = $("setup-panel"); p.hidden = !p.hidden; });
+  $("setup-btn").addEventListener("click", () => openSetup());
+  aiPill.addEventListener("click", () => openSetup("ai"));
+  $("notice-btn").addEventListener("click", () => openSetup("ai"));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("setup-panel").hidden) closeSetup(); });
   autoMode.addEventListener("change", () => send({ type: "set_mode", auto: autoMode.checked }));
   keepGoing.addEventListener("change", () => send({ type: "set_keep_going", on: keepGoing.checked }));
-  document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => { input.value = c.textContent; input.focus(); }));
+  document.querySelectorAll(".idea").forEach((c) => c.addEventListener("click", () => {
+    input.value = c.dataset.prompt || c.textContent; input.focus(); input.dispatchEvent(new Event("input"));
+  }));
 
   window.KaryaMarkdown = renderMarkdown;  // exposed for automated safety tests
   connect();

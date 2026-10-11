@@ -471,8 +471,20 @@ LOGIN: dict = {"state": "idle", "code": "", "url": "", "error": "", "proc": None
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
-def login_status() -> dict:
-    """{'installed', 'signed_in', 'account'}: the sign-in in Karya's private Kiro folder (not the API key)."""
+_STATUS_CACHE: dict = {"at": 0.0, "value": None}
+
+
+def login_status(fresh: bool = False) -> dict:
+    """{'installed', 'signed_in', 'account'}: the sign-in in Karya's private Kiro folder (not the API key).
+    Kept for 30 s: asking the Kiro CLI takes a few seconds."""
+    if not fresh and _STATUS_CACHE["value"] is not None and time.time() - _STATUS_CACHE["at"] < 30:
+        return _STATUS_CACHE["value"]
+    value = _login_status()
+    _STATUS_CACHE.update(at=time.time(), value=value)
+    return value
+
+
+def _login_status() -> dict:
     cli = find_cli()
     if not cli:
         return {"installed": False, "signed_in": False, "install": "https://kiro.dev/downloads"}
@@ -521,7 +533,7 @@ def start_login(method: str = "google") -> dict:
             err = re.search(r"(?im)^.*\b(error|failed|denied|expired)\b.*$", seen)
             LOGIN["error"] = err.group(0).strip()[:200] if err else ""
         proc.wait()
-        LOGIN["state"] = "done" if proc.returncode == 0 and login_status().get("signed_in") else "failed"
+        LOGIN["state"] = "done" if proc.returncode == 0 and login_status(fresh=True).get("signed_in") else "failed"
     threading.Thread(target=watch, daemon=True, name="kiro-login").start()
     time.sleep(2.5)
     return login_progress()
@@ -549,3 +561,4 @@ def logout() -> None:
     with _BRIDGES_LOCK:
         for key in [k for k in _BRIDGES if k[0] == "login"]:
             _BRIDGES.pop(key).close()
+    _STATUS_CACHE.update(at=0.0, value=None)

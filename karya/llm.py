@@ -376,6 +376,8 @@ class LLMClient:
             return self._try_kiro(p, model, messages, tools, trim, errors)
         if p.name == "codex":
             return self._try_kiro(p, model, messages, tools, trim, errors, codex=True)
+        if p.name == "claude":
+            return self._try_kiro(p, model, messages, tools, trim, errors, claude=True)
         reasoning = p.model_reasoning.get(model, p.reasoning_effort)
         tool_retries, shrink, too_large = 1, 1.0, 0
         for _ in range(6):
@@ -470,8 +472,9 @@ class LLMClient:
             errors.append(f"{p.name}:{model}: no usable answer after several tries")
         return "next_model", None
 
-    def _try_kiro(self, p: Provider, model: str, messages, tools, trim, errors, codex: bool = False) -> tuple[str, object]:
-        """Kiro and ChatGPT/Codex subscriptions: their CLIs take the whole step as text (same format for both)."""
+    def _try_kiro(self, p: Provider, model: str, messages, tools, trim, errors, codex: bool = False,
+                  claude: bool = False) -> tuple[str, object]:
+        """Kiro, Claude Code and ChatGPT/Codex subscriptions: their CLIs take the whole step as text (one format)."""
         from . import kiro_bridge
         budget_tokens = self.budget_tokens(p, model)
         system_for = getattr(self, "_system_for", None)
@@ -489,15 +492,18 @@ class LLMClient:
         if budget_tokens:
             budget = min(budget, max(4000, int((budget_tokens - 600) * TEXT_CHARS_PER_TOKEN) - tool_chars))
         msgs = trim(messages, budget) if trim else messages
-        from . import codex_bridge
+        from . import claude_bridge, codex_bridge
         try:
-            if codex:
+            if claude:
+                text = claude_bridge.BRAIN.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout,
+                                                  effort=p.reasoning_effort or "low")
+            elif codex:
                 text = codex_bridge.BRAIN.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout,
                                                  effort=p.reasoning_effort or "low")
             else:
                 bridge = kiro_bridge.bridge_for(p.api_key, getattr(LANE, "name", "main"))
                 text = bridge.prompt(kiro_bridge.render_prompt(msgs, tool_list), model, timeout=p.timeout)
-        except (kiro_bridge.KiroError, codex_bridge.CodexError) as exc:
+        except (kiro_bridge.KiroError, codex_bridge.CodexError, claude_bridge.ClaudeError) as exc:
             errors.append(f"{p.name}:{model}: {exc}")
             return {"auth": ("auth", None), "missing": ("next_provider", None), "model": ("gone", None),
                     "limit": ("rate", 300.0)}.get(exc.kind, ("next_model", None))
@@ -542,6 +548,19 @@ def probe_provider(client: "LLMClient", p: Provider) -> dict:
     """One tiny request to check a key right after it's added: works or not, chosen model, limits and plan type.
     What it learns (tokens per minute, context window) is saved, so the agent sizes every request to fit."""
     out: dict = {"provider": p.name, "title": p.label_name or p.name, "ok": False}
+    if p.name == "claude":
+        from . import claude_bridge
+        started = time.time()
+        try:
+            reply = claude_bridge.BRAIN.prompt("Reply with exactly: OK", p.model, timeout=120, effort="low")
+        except claude_bridge.ClaudeError as exc:
+            out["error"] = str(exc)
+            return out
+        out.update({"ok": bool(reply), "model": p.model, "plan": "paid", "tokens_per_minute": None,
+                    "budget_tokens": client.budget_tokens(p, p.model),
+                    "summary": (f"Claude through Claude Code: answered in {time.time() - started:.1f}s. It uses your "
+                                "Claude plan's limits (or however Claude Code is set up on this PC).")})
+        return out
     if p.name == "codex":
         from . import codex_bridge
         started = time.time()

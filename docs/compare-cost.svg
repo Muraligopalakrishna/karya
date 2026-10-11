@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="452" viewBox="0 0 900 452" role="img" aria-label="Monthly cost: Karya is free; Meta Muse $20 to $100; Grok Bot $20 to $200; OpenAI Dots $100 to $500">
+  <style>
+    text { font-family: "Segoe UI", Helvetica, Arial, sans-serif; fill: #e7ecf3; }
+    .title { font-size: 22px; font-weight: 700; }
+    .sub { font-size: 13px; fill: #9aa6b8; }
+    .name { font-size: 16px; font-weight: 700; }
+    .note { font-size: 12px; fill: #9aa6b8; }
+    .val { font-size: 13px; font-weight: 600; }
+    .axis { font-size: 12px; fill: #9aa6b8; text-anchor: middle; }
+    .grid { stroke: #263046; stroke-width: 1; }
+  </style>
+  <rect x="0.5" y="0.5" width="899" height="451" rx="16" fill="#0f1522" stroke="#263046"/>
+  <text class="title" x="32" y="46">What you pay per month</text>
+  <text class="sub" x="32" y="70">Cheapest paid plan and top plan, from each company's published prices (October 2026).</text>
+
+  <line class="grid" x1="250" y1="98" x2="250" y2="372"/>
+  <line class="grid" x1="362" y1="98" x2="362" y2="372"/>
+  <line class="grid" x1="474" y1="98" x2="474" y2="372"/>
+  <line class="grid" x1="586" y1="98" x2="586" y2="372"/>
+  <line class="grid" x1="698" y1="98" x2="698" y2="372"/>
+  <line class="grid" x1="810" y1="98" x2="810" y2="372"/>
+  <text class="axis" x="250" y="392">$0</text>
+  <text class="axis" x="362" y="392">$100</text>
+  <text class="axis" x="474" y="392">$200</text>
+  <text class="axis" x="586" y="392">$300</text>
+  <text class="axis" x="698" y="392">$400</text>
+  <text class="axis" x="810" y="392">$500</text>
+
+  <text class="name" x="32" y="128">Karya</text>
+  <text class="note" x="32" y="146">Open source, on your PC</text>
+  <rect x="250" y="114" width="62" height="26" rx="13" fill="#3fb950" fill-opacity="0.18" stroke="#3fb950"/>
+  <text class="val" x="281" y="132" text-anchor="middle" style="fill:#3fb950">Free</text>
+  <text class="val" x="326" y="132" style="font-weight:400">$0. Bring any AI: free keys work, or a plan you already pay for.</text>
+
+  <text class="name" x="32" y="198">Meta Muse</text>
+  <text class="note" x="32" y="216">Free tier with limits</text>
+  <rect x="250" y="183" width="22.4" height="14" rx="3" fill="#4f8cff"/>
+  <text class="val" x="280" y="195">$20</text>
+  <rect x="250" y="203" width="112" height="14" rx="3" fill="#8b5cf6"/>
+  <text class="val" x="370" y="215">$100</text>
+
+  <text class="name" x="32" y="268">Grok Bot</text>
+  <text class="note" x="32" y="286">Cursor Pro to Ultra plans</text>
+  <rect x="250" y="253" width="22.4" height="14" rx="3" fill="#4f8cff"/>
+  <text class="val" x="280" y="265">$20</text>
+  <rect x="250" y="273" width="224" height="14" rx="3" fill="#8b5cf6"/>
+  <text class="val" x="482" y="285">$200</text>
+
+  <text class="name" x="32" y="338">OpenAI Dots</text>
+  <text class="note" x="32" y="356">With ChatGPT Pro</text>
+  <rect x="250" y="323" width="112" height="14" rx="3" fill="#4f8cff"/>
+  <text class="val" x="370" y="335">$100</text>
+  <rect x="250" y="343" width="560" height="14" rx="3" fill="#8b5cf6"/>
+  <text class="val" x="818" y="355">$500</text>
+
+  <rect x="250" y="414" width="12" height="12" rx="2" fill="#4f8cff"/>
+  <text class="note" x="268" y="424" style="fill:#e7ecf3">Cheapest paid plan</text>
+  <rect x="410" y="414" width="12" height="12" rx="2" fill="#8b5cf6"/>
+  <text class="note" x="428" y="424" style="fill:#e7ecf3">Top plan</text>
+</svg>
