@@ -24,6 +24,7 @@ TAG = "[Karya]"              # plain text: WhatsApp Web draws emoji as images, w
 POLL_SECONDS = 2.5
 TITLE = "Karya WhatsApp - keep this window open"
 REOPEN_SECONDS = 5
+RETRY_SECONDS = 15           # no internet yet (right after Windows starts): try WhatsApp Web again this often
 
 READ_JS = r"""() => {
   const txt = (e) => ((e && (e.innerText || e.textContent)) || '').trim();
@@ -207,8 +208,8 @@ class WhatsAppBridge:
                     ctx = self._launch(pw)
                     try:
                         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                        page.goto("https://web.whatsapp.com/", wait_until="domcontentloaded", timeout=90000)
-                        self._loop(page)
+                        if self._open(page):
+                            self._loop(page)
                     finally:
                         try:
                             ctx.close()
@@ -238,6 +239,19 @@ class WhatsAppBridge:
             except Exception as exc:  # noqa: BLE001
                 errors.append(str(exc).splitlines()[0][:80])
         raise RuntimeError("could not start Chrome for WhatsApp: " + " | ".join(errors))
+
+    def _open(self, page) -> bool:
+        """Load WhatsApp Web, trying again while there's no internet yet (Karya starting with Windows, say)."""
+        while not self._stop.is_set():
+            try:
+                page.goto("https://web.whatsapp.com/", wait_until="domcontentloaded", timeout=90000)
+                return True
+            except Exception:  # noqa: BLE001 - no connection yet, or the window was closed
+                if page.is_closed():
+                    return False
+                self.state, self.detail = "starting", "waiting for the internet to open WhatsApp Web"
+                self._stop.wait(RETRY_SECONDS)
+        return False
 
     def _persist(self, welcomed: bool = True) -> None:
         _save_state({"seen": list(self._seen), "welcomed": welcomed, "sent": list(self._sent)})

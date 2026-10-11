@@ -297,6 +297,7 @@
     }
     const phone = panel.querySelector(".phone-box"), agentList = panel.querySelector(".agents-box");
     if (phone && phone.update) phone.update(s.whatsapp || {});
+    if (phone && phone.setAutostart) phone.setAutostart(s.autostart);
     if (agentList && agentList.update) agentList.update(s.agents || []);
     if (agentList && agentList.setAwake) agentList.setAwake(s.keep_awake);
     clearTimeout(renderSetup.poll);
@@ -550,6 +551,16 @@
       try { box.update(await api("/api/phone", { action: "disconnect" })); loadStatus(); } catch (e) { msg.textContent = "\u2716 " + e.message; }
     }, "ghost small", "Disconnect WhatsApp");
     const row = el("div", "phone-row"); row.append(num, go, off);
+    const auto = el("label", "toggle-row");
+    const autoBox = el("input"); autoBox.type = "checkbox"; autoBox.setAttribute("aria-label", "Start Karya when I sign in to Windows");
+    auto.append(autoBox, " Start Karya when I sign in to Windows, so WhatsApp tasks and bots work without opening Karya (it waits minimized in the taskbar)");
+    autoBox.addEventListener("change", async () => {
+      try {
+        const d = await api("/api/autostart", { on: autoBox.checked }); autoBox.checked = !!d.on;
+        msg.textContent = d.on ? "Karya now starts by itself when you sign in to Windows." : "Karya won't start with Windows.";
+      } catch (e) { msg.textContent = "\u2716 " + e.message; autoBox.checked = !autoBox.checked; }
+    });
+    box.setAutostart = (st) => { auto.hidden = !(st && st.supported); autoBox.checked = !!(st && st.on); };
     box.update = (wa) => {
       const st = wa.state || "off";
       const text = {
@@ -564,8 +575,8 @@
       num.hidden = !(st === "off" || st === "error"); go.hidden = !(st === "off" || st === "error"); off.hidden = st === "off";
     };
     box.append(el("h3", "", "Give Karya tasks from your phone (WhatsApp)"),
-      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat): Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that one chat is read. Logins and passwords never go over WhatsApp. It works while Karya runs on this PC; its WhatsApp window must stay open (it can sit behind other windows)."),
-      state, row, msg);
+      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat): Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that one chat is read. Logins and passwords never go over WhatsApp. Karya has to be running on this PC to read it: turn on \"Start Karya when I sign in to Windows\" and it always is while the PC is on. Messages you send while it's off are done when it starts, if they're under 6 hours old. Its WhatsApp window must stay open (it can sit behind other windows)."),
+      state, row, auto, msg);
     box.update({ state: "off" });
     return box;
   }
@@ -628,7 +639,7 @@
     // keep the PC awake
     const awake = el("label", "toggle-row");
     const awakeBox = el("input"); awakeBox.type = "checkbox";
-    awake.append(awakeBox, " Keep this PC awake while bots have a schedule or are working (the screen can still turn off; closing the lid still sleeps)");
+    awake.append(awakeBox, " Keep this PC awake while bots have a schedule or are working, or WhatsApp is linked (the screen can still turn off; closing the lid can still sleep)");
     awakeBox.addEventListener("change", async () => {
       try { await api("/api/settings", { KARYA_KEEP_AWAKE: awakeBox.checked ? "true" : "false" }); msg.textContent = awakeBox.checked ? "The PC stays awake for your bots." : "Normal sleep settings."; }
       catch (e) { msg.textContent = "\u2716 " + e.message; awakeBox.checked = !awakeBox.checked; }

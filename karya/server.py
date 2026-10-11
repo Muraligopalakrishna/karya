@@ -439,12 +439,12 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             except (OSError, ValueError):
                 checks = {}
         from .ext_link import EXTENSION_DIR, link
-        from . import phone, scheduler
+        from . import autostart, phone, scheduler
         return {**settings.status(), "tools": len(TOOLS), "auto_mode": hub.agent.auto_mode, "busy": hub.agent.busy,
                 "running": hub.label if hub.busy_now() else None, "queued": len(hub.queue),
                 "whatsapp": phone.CHANNEL.status() if phone.CHANNEL else {"state": "off", "detail": ""},
                 "agents": [scheduler._row(a) for a in scheduler.load()], "bots_running": hub.bots_running(),
-                "keep_awake": settings.keep_awake,
+                "keep_awake": settings.keep_awake, "autostart": autostart.status(),
                 "browser_link": link.status(), "extension_dir": str(EXTENSION_DIR), "browser_mode": settings.browser_mode,
                 "checks": {k: {f: v.get(f) for f in ("ok", "model", "plan", "tokens_per_minute", "summary", "error")}
                            for k, v in checks.items() if k in {p.name for p in settings.providers}}}
@@ -594,6 +594,18 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
             data.setdefault("profile", {})["whatsapp"] = "+" + number
             memory_store.save(data)
         return await asyncio.to_thread(phone.CHANNEL.enable, 20.0)
+
+    @app.post("/api/autostart")
+    async def autostart_action(request: Request, token: str = ""):
+        """Setup > "Start Karya when I sign in to Windows"."""
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import autostart
+        try:
+            body = dict(await request.json())
+            return await asyncio.to_thread(autostart.enable if body.get("on") else autostart.disable)
+        except (ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
+            return JSONResponse({"error": str(exc)[:300]}, status_code=400)
 
     @app.post("/api/agents")
     async def agents_action(request: Request, token: str = ""):

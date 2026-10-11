@@ -1,5 +1,5 @@
 """Setup > Bots > "Keep this PC awake": stops Windows from going to sleep on its own while Karya runs and a bot is
-working or has a schedule, so scheduled bots run on time. The screen can still turn off, and closing the lid or
+working or has a schedule, or WhatsApp is linked, so scheduled bots run on time and WhatsApp tasks are read. The screen can still turn off, and closing the lid or
 choosing Sleep still puts the PC to sleep. Off by default."""
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ _STARTED = False
 def wanted(hub) -> bool:
     if not settings.keep_awake:
         return False
-    from . import scheduler
+    from . import phone, scheduler
+    channel = phone.CHANNEL
+    if channel is not None and channel.status().get("state") not in ("off", "error"):
+        return True                       # WhatsApp is linked: a task can come in any time
     return bool(hub.bots) or any(a.get("enabled") and scheduler.scheduled(a) for a in scheduler.load())
 
 

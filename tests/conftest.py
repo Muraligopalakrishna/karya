@@ -58,7 +58,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(outbox, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(focus, "CURRENT", {})
     monkeypatch.setattr(settings, "keep_going", False)
-    from karya import codex_bridge, scheduler, whatsapp
+    from karya import autostart, codex_bridge, scheduler, whatsapp
+    monkeypatch.setattr(autostart, "startup_dir", lambda: tmp_path / "Startup")   # never the user's real one
     monkeypatch.setattr(scheduler, "AGENTS_FILE", tmp_path / "agents.json")
     monkeypatch.setattr(whatsapp, "STATE_FILE", tmp_path / "whatsapp_state.json")
     monkeypatch.setattr(whatsapp, "PROFILE", tmp_path / "whatsapp_profile")
