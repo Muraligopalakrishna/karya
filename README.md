@@ -40,7 +40,7 @@ Ask in plain words, in Karya's chat, on WhatsApp, or from another AI app.
 You need Windows 10 or 11, [Python 3.11 or newer](https://www.python.org/downloads/) (tick "Add Python to PATH" in the installer) and Google Chrome.
 
 1. Download Karya. On this page click **Code > Download ZIP** and unzip it, or run `git clone https://github.com/Muraligopalakrishna/karya.git`.
-2. Double-click `start.bat`. The first start installs what Karya needs, which takes a few minutes, then opens Karya in your browser.
+2. Double-click `start.bat`. The first start installs what Karya needs, which takes a few minutes. Then Karya opens in its own window and adds itself to your Start menu.
 3. Follow the welcome guide. It asks three things and you can skip any of them:
    - your AI (see the next section)
    - about you: your name, email and city, and your resume, which Karya reads once and tailors for every job
@@ -49,6 +49,16 @@ You need Windows 10 or 11, [Python 3.11 or newer](https://www.python.org/downloa
 ![The welcome guide](docs/screenshot-guide.png)
 
 Everything stays on your PC. Your settings live in `.env` and your data in `data/`, and git leaves both out. There is no Karya server and no Karya account. Setup is the button at the top right, and **Setup > Safety & more** shows the welcome guide again.
+
+### Opening Karya
+
+After the first start you open Karya like any other app: press the Windows key, type **Karya** and press Enter. **Setup > Safety & more** can also put an icon on your desktop and start Karya when you sign in to Windows.
+
+Closing Karya's window doesn't stop it, so WhatsApp tasks and your bots keep working in the background. To stop everything, use **Quit Karya** in Setup > Safety & more.
+
+### Why does Karya look like a web page?
+
+Karya is a program on your PC. Its screen is a page that Karya itself serves from your PC (the address 127.0.0.1 means "this computer"), and it shows that page in a window of its own. Teams, Slack and VS Code draw their screens the same way, with a built-in browser engine. The page doesn't come from the internet: Karya goes online only for your tasks and to reach the AI you chose. The window uses Chrome or Edge in app mode, with a profile of its own, so your own browser tabs and settings aren't touched, and links you click in it open in your normal browser.
 
 ## Connect an AI
 

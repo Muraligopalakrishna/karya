@@ -16,11 +16,22 @@ where ollama >nul 2>nul && (
   tasklist /FI "IMAGENAME eq ollama.exe" | find /I "ollama.exe" >nul || start "" /B ollama serve >nul 2>nul
 )
 
-if /I "%1"=="cli" (
+if /I "%~1"=="cli" (
   ".venv\Scripts\python.exe" -m karya.cli
-) else (
-  ".venv\Scripts\python.exe" -m karya.server %*
+  if errorlevel 1 pause
+  goto :eof
 )
+
+rem No options: Karya opens as an app, in its own window, and keeps running in the background without a console.
+rem From now on you can open it from the Start menu: press the Windows key, type Karya, press Enter.
+if "%~1"=="" if exist ".venv\Scripts\pythonw.exe" (
+  echo [Karya] Opening Karya...
+  start "" ".venv\Scripts\pythonw.exe" -m karya.desktop
+  goto :eof
+)
+
+rem start.bat --no-browser (or other options): Karya runs in this window, and closing it stops Karya.
+".venv\Scripts\python.exe" -m karya.server %*
 if errorlevel 1 pause
 goto :eof
 

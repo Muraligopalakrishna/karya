@@ -12,7 +12,6 @@ import json
 import re
 import time
 import uuid
-import webbrowser
 from pathlib import Path
 
 from .config import settings
@@ -218,9 +217,14 @@ class McpRuns:
             self.tickets.pop(ticket, None)
 
     def _show_karya(self) -> None:
-        if not self.hub.clients:  # nobody is looking at Karya: open it so the card is seen
+        if not self.hub.clients:  # nobody is looking at Karya: open its window so the card is seen
             try:
-                webbrowser.open(self.page_url)
+                from . import desktop
+                hwnd = desktop.find_window()
+                if hwnd:
+                    desktop.focus(hwnd)
+                else:
+                    desktop.open_window(self.page_url + ("&" if "?" in self.page_url else "?") + "app=1")
             except Exception:  # noqa: BLE001
                 pass
 

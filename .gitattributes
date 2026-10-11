@@ -1,0 +1,5 @@
+# Windows batch files must have Windows line endings, or cmd can misread them (a ZIP download keeps these)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ico binary
+*.png binary

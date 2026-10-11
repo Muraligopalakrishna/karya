@@ -261,7 +261,7 @@ EDITABLE_KEYS = tuple([k for p in PRESETS for k in (p.key_env, f"{p.name.upper()
                         "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED",
                         "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL",
                         "KARYA_KEEP_AWAKE", "CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_EFFORT",
-                        "OLLAMA_ENABLED", "KARYA_ONBOARDED"])
+                        "OLLAMA_ENABLED", "KARYA_ONBOARDED", "KARYA_START_MENU"])
 SECRET_KEYS = {p.key_env for p in PRESETS} | {"CUSTOM_API_KEY", "EMAIL_APP_PASSWORD", "VERCEL_TOKEN"}
 
 

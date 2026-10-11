@@ -1,6 +1,8 @@
 (() => {
   "use strict";
   const params = new URLSearchParams(location.search);
+  if (params.get("app") === "1") sessionStorage.setItem("karya-app", "1");   // opened as Karya's own window
+  const inApp = sessionStorage.getItem("karya-app") === "1";
   if (params.get("token")) {
     localStorage.setItem("karya-token", params.get("token"));
     history.replaceState(null, "", "/");
@@ -12,7 +14,7 @@
   const chat = $("chat"), input = $("input"), form = $("chat-form"), sendBtn = $("send-btn"), stopBtn = $("stop-btn");
   const statusLine = $("status-line"), dot = $("conn-dot"), providerLabel = $("provider-label"), autoMode = $("auto-mode"), keepGoing = $("keep-going");
   const aiPill = $("ai-pill"), notice = $("notice");
-  let ws = null, busy = false, activity = null, retry = 0;
+  let ws = null, busy = false, activity = null, retry = 0, quitting = false;
   const steps = new Map();
 
   // ---------- safe markdown ----------
@@ -225,6 +227,7 @@
     ws.onopen = () => { retry = 0; dot.classList.add("on"); loadStatus(); };
     ws.onclose = async () => {
       dot.classList.remove("on");
+      if (quitting) return;                       // Quit Karya: it stopped on purpose
       try {
         const r = await fetch(`/api/status?token=${encodeURIComponent(token)}`);
         if (r.status === 401) {
@@ -1058,6 +1061,63 @@
       options: [["auto", "Your Chrome when the extension is connected, else Karya's own window"], ["chrome", "Only your Chrome (Karya Browser Link)"], ["karya", "Only Karya's own Chrome window"]] }]),
       accountsBox()];
   }
+  // ---------- the Karya app: Start menu, desktop icon, start with Windows, Quit ----------
+  function appToggle(label, change) {
+    const row = el("label", "toggle-row");
+    const cb = el("input"); cb.type = "checkbox"; cb.setAttribute("aria-label", label);
+    row.append(cb, " " + label);
+    cb.addEventListener("change", async () => {
+      cb.disabled = true;
+      try { await change(cb.checked); loadStatus(); }
+      catch (e) { cb.checked = !cb.checked; toast("\u2716 " + e.message); }
+      cb.disabled = false;
+    });
+    return { row, cb };
+  }
+  function appBox() {
+    const box = el("section", "app-box");
+    const toggles = el("div", "app-toggles");
+    const start = appToggle("In the Start menu: press the Windows key, type Karya and press Enter", (on) => api("/api/app", { start_menu: on }));
+    const desk = appToggle("An icon on the desktop", (on) => api("/api/app", { desktop: on }));
+    const auto = appToggle("Start Karya when I sign in to Windows, so WhatsApp tasks and bots work without opening it", (on) => api("/api/autostart", { on }));
+    toggles.append(start.row, desk.row, auto.row);
+    box.append(el("h3", "", "The Karya app"),
+      el("p", "hint", "Karya opens in its own window, like the other apps on your PC."), toggles,
+      el("p", "hint", "Closing Karya's window doesn't stop it: WhatsApp tasks and your bots keep working in the background. Quit Karya stops everything until you open it again."),
+      button("Quit Karya", () => quitKarya(), "ghost quit", "Quit Karya"));
+    onStatus((s) => {
+      const a = s.app || {};
+      toggles.hidden = !a.supported;
+      start.cb.checked = !!a.start_menu; desk.cb.checked = !!a.desktop; auto.cb.checked = !!(s.autostart || {}).on;
+    });
+    return box;
+  }
+  async function quitKarya() {
+    const s = lastStatus || {};
+    const working = s.busy || (s.bots_running || []).length;
+    if (!confirm(working ? "Karya is working on something right now. Quit anyway? Everything stops until you open Karya again."
+                         : "Quit Karya? WhatsApp tasks and your bots stop until you open Karya again.")) return;
+    let answer;
+    try { answer = await api("/api/quit", {}); } catch (e) { toast("\u2716 " + e.message); return; }
+    quitting = true;
+    closeSetup();
+    showStopped(!!(answer && answer.start_menu));
+    setTimeout(() => { try { window.close(); } catch (e) { /* a normal browser tab can't close itself */ } }, 800);
+  }
+  function showStopped(startMenu) {
+    const root = $("guide");
+    guide = null;
+    root.replaceChildren();
+    root.setAttribute("aria-label", "Karya has stopped");
+    const card = el("div", "guide-card stopped-card");
+    const logo = el("img", "guide-logo"); logo.src = "/static/logo.svg"; logo.alt = ""; logo.width = 44; logo.height = 44;
+    card.append(logo, el("h2", "", "Karya has stopped"), el("p", "hint", startMenu
+      ? "Open it again from the Start menu: press the Windows key, type Karya and press Enter."
+      : "Open it again with start.bat in your Karya folder."));
+    root.appendChild(card);
+    root.hidden = false;
+  }
+
   function moreTab() {
     const approvals = settingsForm("Approvals", "Karya asks before it sends, posts, submits, pays or deletes, unless you change it here.", [
       { key: "AUTO_SUBMIT_PICKED", label: "When Karya applies to jobs you pick", def: "false", options: [["false", "Ask me before each Submit"], ["true", "Submit the jobs I pick without asking (checks still run)"]] },
@@ -1073,7 +1133,7 @@
     const again = el("section", "guide-again");
     again.append(el("h3", "", "Welcome guide"), el("p", "hint", "The three steps Karya shows the first time: your AI, about you, extras."),
       button("Show the welcome guide again", async () => { try { await api("/api/onboarding", { action: "reset" }); } catch (e) { /* still show it */ } closeSetup(); openGuide(1); }, "ghost", "Show the welcome guide again"));
-    return [approvals, limits, sites, again];
+    return [appBox(), approvals, limits, sites, again];
   }
   function showTab(id) {
     currentTab = id;
@@ -1147,6 +1207,10 @@
   }
   function extrasList() {
     const wrap = el("div", "extras");
+    const appLine = el("div", "extra");
+    const appText = el("p", "hint");
+    const deskIcon = appToggle("Also put a Karya icon on my desktop", (on) => api("/api/app", { desktop: on }));
+    appLine.append(el("h4", "", "Open Karya like any app"), appText, deskIcon.row);
     const wa = el("div", "extra");
     const waState = el("span", "hint");
     const waBtn = button("Connect WhatsApp", async () => {
@@ -1176,13 +1240,19 @@
           starting: " Opening WhatsApp Web...", opening: " Opening your chat...", error: " \u2716 " + ((s.whatsapp || {}).detail || "") }[st] || waState.textContent;
       }
       waBtn.hidden = st === "ready";
+      const app = s.app || {};
+      appLine.hidden = !app.supported;
+      appText.textContent = app.start_menu
+        ? "Karya is in your Start menu: press the Windows key, type Karya and press Enter. Closing its window doesn't stop it, so WhatsApp tasks and bots keep working."
+        : "Add Karya to the Start menu in Setup > Safety & more, then open it by typing Karya in Windows search.";
+      deskIcon.cb.checked = !!app.desktop;
       auto.hidden = !(s.autostart && s.autostart.supported);
       autoBox.checked = !!(s.autostart && s.autostart.on);
       chromeSteps.replaceChildren();
       if ((s.browser_link || {}).connected) chromeState.textContent = "\u2714 Connected.";
       else { chromeState.textContent = ""; chromeSteps.appendChild(extensionSteps(s.extension_dir || "")); }
     });
-    wrap.append(wa, auto, chrome);
+    wrap.append(appLine, wa, auto, chrome);
     return wrap;
   }
   function buildGuide() {
@@ -1402,6 +1472,20 @@
     scroll();
     (user.value ? pass : user).focus();
   }
+
+  // ---------- links: in Karya's own window, web links open in your normal browser (with your logins) ----------
+  const openOutside = (e) => {
+    if (!inApp || e.defaultPrevented || (e.type === "auxclick" && e.button !== 1)) return;
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
+    let url;
+    try { url = new URL(a.getAttribute("href"), location.href); } catch (err) { return; }
+    if (!/^https?:$/.test(url.protocol) || url.origin === location.origin) return;
+    e.preventDefault();
+    api("/api/open", { url: url.href }).catch(() => window.open(url.href, "_blank", "noopener"));
+  };
+  document.addEventListener("click", openOutside);
+  document.addEventListener("auxclick", openOutside);
 
   // ---------- inputs ----------
   form.addEventListener("submit", (e) => {

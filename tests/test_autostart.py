@@ -4,7 +4,7 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
-from karya import autostart, awake, phone, whatsapp
+from karya import autostart, awake, phone, shortcuts, whatsapp
 from karya.agent import Agent
 from karya.config import ROOT, settings
 
@@ -14,12 +14,15 @@ windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows start
 
 
 @windows_only
-def test_the_startup_shortcut_runs_karya_minimized_and_can_be_removed(tmp_path):
+def test_the_startup_shortcut_starts_karya_hidden_and_can_be_removed(tmp_path):
     assert autostart.status() == {"supported": True, "on": False}
     assert autostart.enable(ROOT) == {"supported": True, "on": True}
     assert autostart.shortcut_path().parent == tmp_path / "Startup"            # the test's folder, not the real one
     made = autostart.read_shortcut()
-    assert made["target"].lower() == str(ROOT / "start.bat").lower() and made["args"] == "--no-browser"
+    target, args = shortcuts.launcher(ROOT, background=True)
+    assert made["target"].lower() == target.lower() and made["args"] == args
+    if target.lower().endswith("pythonw.exe"):
+        assert args == "-m karya.desktop --background"                        # no console window in the taskbar
     assert made["dir"].lower() == str(ROOT).lower() and made["style"] == 7     # 7 = minimized
     assert autostart.disable() == {"supported": True, "on": False} and not autostart.shortcut_path().exists()
     with pytest.raises(ValueError):
@@ -81,3 +84,15 @@ def test_keep_awake_also_while_whatsapp_is_linked(monkeypatch):
     monkeypatch.setattr(settings, "keep_awake", False)
     monkeypatch.setattr(phone, "CHANNEL", Channel("ready"))
     assert awake.wanted(Hub()) is False                                        # only when the user turned it on
+
+
+@windows_only
+def test_an_old_startup_shortcut_still_counts_and_is_upgraded():
+    shortcuts.make(autostart.shortcut_path(), str(ROOT / "start.bat"), "--no-browser", str(ROOT), "", "old", 7)
+    assert autostart.status()["on"] is True                                   # the start.bat kind still counts
+    target, _ = shortcuts.launcher(ROOT, background=True)
+    upgraded = autostart.upgrade(ROOT)
+    assert upgraded == target.lower().endswith("pythonw.exe")
+    if upgraded:
+        assert autostart.read_shortcut()["target"].lower() == target.lower()
+        assert autostart.upgrade(ROOT) is False                               # once

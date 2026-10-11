@@ -60,6 +60,12 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "keep_going", False)
     from karya import autostart, codex_bridge, scheduler, whatsapp
     monkeypatch.setattr(autostart, "startup_dir", lambda: tmp_path / "Startup")   # never the user's real one
+    from karya import shortcuts
+    monkeypatch.setattr(shortcuts, "start_menu_dir", lambda: tmp_path / "StartMenu")
+    monkeypatch.setattr(shortcuts, "desktop_dir", lambda: tmp_path / "Desktop")
+    monkeypatch.setattr(shortcuts, "_CACHE", {})
+    real = [shortcuts.path_for(w).parent for w in shortcuts.PLACES] + [autostart.shortcut_path().parent]
+    assert all(str(p).startswith(str(tmp_path)) for p in real), real    # a test can never reach the real folders
     from karya import onboarding
     monkeypatch.setattr(onboarding, "RESUME_DIR", tmp_path / "resume")
     monkeypatch.setattr(onboarding, "IMPORT", {"state": "idle", "error": ""})

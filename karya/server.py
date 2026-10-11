@@ -10,7 +10,6 @@ import subprocess
 import sys
 import time
 import uuid
-import webbrowser
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
@@ -336,8 +335,17 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         if background:
             app.state.scheduler_task.cancel()
             from . import phone
-            if phone.CHANNEL is not None and phone.CHANNEL.bridge is not None:
-                phone.CHANNEL.bridge.stop()
+            bridge = phone.CHANNEL.bridge if phone.CHANNEL is not None else None
+            if bridge is not None:
+                bridge.stop()
+                thread = getattr(bridge, "_thread", None)
+                if thread is not None:
+                    await asyncio.to_thread(thread.join, 8)
+            try:
+                from .tools import browser as browser_tools
+                await asyncio.wait_for(asyncio.to_thread(browser_tools.session.shutdown), 10)
+            except Exception:  # noqa: BLE001 - stopping goes on whatever happens
+                pass
 
     app = FastAPI(title="Karya", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.token = token or secrets.token_urlsafe(24)
@@ -444,7 +452,7 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
                 "running": hub.label if hub.busy_now() else None, "queued": len(hub.queue),
                 "whatsapp": phone.CHANNEL.status() if phone.CHANNEL else {"state": "off", "detail": ""},
                 "agents": [scheduler._row(a) for a in scheduler.load()], "bots_running": hub.bots_running(),
-                "keep_awake": settings.keep_awake, "autostart": autostart.status(), **_readiness(),
+                "keep_awake": settings.keep_awake, **(await asyncio.to_thread(_app_states)), **_readiness(),
                 "browser_link": link.status(), "extension_dir": str(EXTENSION_DIR), "browser_mode": settings.browser_mode,
                 "checks": {k: {f: v.get(f) for f in ("ok", "model", "plan", "tokens_per_minute", "summary", "error")}
                            for k, v in checks.items() if k in {p.name for p in settings.providers}}}
@@ -655,6 +663,55 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         except (ValueError, TypeError, OSError) as exc:
             return JSONResponse({"error": str(exc)[:300]}, status_code=400)
         return JSONResponse({"error": "unknown action"}, status_code=400)
+
+    @app.post("/api/quit")
+    async def quit_karya(request: Request, token: str = ""):
+        """Setup > Safety & more > Quit Karya: stops everything (the chat, bots, WhatsApp) until it's opened again."""
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        stop = getattr(app.state, "quit", None)
+        if stop is None:
+            return JSONResponse({"error": "Quit works in Karya's app (opened from the Start menu or start.bat)."},
+                                status_code=400)
+        hub: Hub = app.state.hub
+        hub.agent.cancel()
+        hub.deny_all()
+        for agent_id in list(hub.bots):
+            hub.stop_bot(agent_id)
+        from . import shortcuts
+        start_menu = (await asyncio.to_thread(shortcuts.app_status)).get("start_menu", False)
+        asyncio.get_running_loop().call_later(0.5, stop)   # after this answer has gone back to the page
+        return {"quitting": True, "start_menu": start_menu}
+
+    @app.post("/api/open")
+    async def open_link(request: Request, token: str = ""):
+        """A link clicked in Karya's window opens in the user's normal browser (with their logins)."""
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            url = str(dict(await request.json()).get("url") or "").strip()
+        except (ValueError, TypeError):
+            url = ""
+        if not re.match(r"^https?://[^\s]+$", url, re.I) or len(url) > 4000:
+            return JSONResponse({"error": "only web links can be opened"}, status_code=400)
+        from . import desktop
+        await asyncio.to_thread(desktop.open_in_browser, url)
+        return {"opened": True}
+
+    @app.post("/api/app")
+    async def app_shortcuts(request: Request, token: str = ""):
+        """Setup > Safety & more: Karya in the Start menu and on the desktop."""
+        if not allowed(request, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import shortcuts
+        try:
+            body = dict(await request.json())
+            for where in ("start_menu", "desktop"):
+                if where in body:
+                    await asyncio.to_thread(shortcuts.set_place, where, bool(body[where]))
+        except (ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
+            return JSONResponse({"error": str(exc)[:300]}, status_code=400)
+        return await asyncio.to_thread(shortcuts.app_status)
 
     @app.post("/api/autostart")
     async def autostart_action(request: Request, token: str = ""):
@@ -891,6 +948,11 @@ def _env_flag(name: str) -> bool:
     return _env(name, "").lower() in ("1", "true", "yes", "skipped")
 
 
+def _app_states() -> dict:
+    from . import autostart, shortcuts
+    return {"autostart": autostart.status(), "app": shortcuts.app_status()}
+
+
 def _readiness() -> dict:
     """What the page needs to know to guide the user: is there an AI Karya can really use (the offline model counts
     only once it's downloaded), what Karya knows about them, and whether to show the first-run guide (people who
@@ -966,7 +1028,37 @@ def _port_free(port: int) -> bool:
             return False
 
 
+def _show_window(port: int, token: str) -> None:
+    """Karya's own window (or the open one, brought to the front)."""
+    from . import desktop
+    hwnd = desktop.find_window()
+    if hwnd:
+        desktop.focus(hwnd)
+    else:
+        desktop.open_window(desktop.app_url(port, token))
+
+
+def _open_when_ready(port: int, token: str) -> None:
+    for _ in range(120):
+        if _karya_already_running(port):
+            _show_window(port, token)
+            return
+        time.sleep(0.5)
+
+
+def _desktop_setup() -> None:
+    """The first start adds Karya to the Start menu (type "Karya" in Windows search to open it); an older startup
+    entry (start.bat in a console window) becomes the hidden launcher."""
+    from . import autostart, shortcuts
+    for step in (shortcuts.first_run, autostart.upgrade):
+        try:
+            step()
+        except Exception:  # noqa: BLE001 - a shortcut that can't be made never stops Karya
+            pass
+
+
 def main() -> None:
+    import threading
     import uvicorn
     port = settings.port
     token = load_token()
@@ -975,7 +1067,7 @@ def main() -> None:
     if _karya_already_running(port):
         print("\n  Karya is already running. Chat page: " + url + "\n", flush=True)
         if open_browser:
-            webbrowser.open(url)
+            _show_window(port, token)
         return
     if not _port_free(port):
         print(f"\n  Port {port} is used by another program. Set a different PORT in .env and start again.\n", flush=True)
@@ -988,10 +1080,17 @@ def main() -> None:
         print(f"  (Couldn't write the browser extension's config: {exc})", flush=True)
     print("\n  Karya is running. Open this link (keep it private):\n  " + url + "\n", flush=True)
     print("  AI providers: " + (", ".join(p.label for p in settings.providers) or "NONE - add a key to .env"), flush=True)
-    print("  Keep this window open while you use Karya. Close it to stop Karya.\n", flush=True)
+    if sys.stdout is not None and sys.stdout.isatty():
+        print("  Keep this window open while you use Karya. Close it to stop Karya.\n", flush=True)
+    else:
+        print("  Running in the background. Quit it from Setup > Safety & more > Quit Karya.\n", flush=True)
+    if sys.platform == "win32":
+        threading.Thread(target=_desktop_setup, daemon=True, name="karya-shortcuts").start()
     if open_browser:
-        webbrowser.open(url)
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+        threading.Thread(target=_open_when_ready, args=(port, token), daemon=True, name="karya-window").start()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    app.state.quit = lambda: setattr(server, "should_exit", True)       # Setup > Quit Karya
+    server.run()
 
 
 if __name__ == "__main__":

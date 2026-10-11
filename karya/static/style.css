@@ -251,3 +251,12 @@ details.advanced .providers { margin-top: 8px; }
   .composer-hint { display: none; }
   .bubble { max-width: 95%; }
 }
+
+/* the Karya app section and the stopped screen */
+.app-toggles { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 6px; }
+.app-toggles .toggle-row { margin: 4px 0; }
+button.quit { color: var(--bad); border-color: rgba(248, 81, 73, .5); }
+button.quit:hover { background: rgba(248, 81, 73, .1); }
+.stopped-card { width: min(520px, 100%); text-align: center; padding: 30px 28px; }
+.stopped-card .guide-logo { margin: 0 auto 12px; display: block; }
+.stopped-card h2 { margin: 0 0 6px; }

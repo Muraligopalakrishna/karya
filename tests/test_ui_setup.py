@@ -209,6 +209,26 @@ def test_guide_setup_tabs_and_login_card(tmp_path, monkeypatch):
             assert "from Maya" in page.inner_text(".bot-report")
             assert "Maya finished" in page.inner_text(".bot-card")
             assert page.is_enabled("#send-btn")
+
+            # Safety & more: Karya in the Start menu (the test's own folder), then Quit Karya
+            from karya import shortcuts
+            page.click("#setup-btn")
+            page.click("#tab-more")
+            page.wait_for_selector("#view-more h3:has-text('The Karya app')", timeout=5000)
+            page.check("#view-more [aria-label^='In the Start menu']")
+            for _ in range(60):
+                if shortcuts.path_for("start_menu").exists():
+                    break
+                time.sleep(0.25)
+            assert shortcuts.path_for("start_menu").exists() and str(tmp_path) in str(shortcuts.path_for("start_menu"))
+            quits = []
+            app.state.quit = lambda: quits.append(True)
+            page.wait_for_function("() => document.querySelector(\"#view-more [aria-label^='In the Start menu']\").checked")
+            page.click("#view-more button:has-text('Quit Karya')")
+            page.wait_for_selector("#guide:has-text('Karya has stopped')", timeout=5000)
+            assert "type Karya" in page.inner_text("#guide")
+            time.sleep(1)
+            assert quits == [True]
             browser.close()
     finally:
         server.should_exit = True
