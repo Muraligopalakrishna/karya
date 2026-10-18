@@ -370,8 +370,21 @@ const ops = {
     } finally {
       debuggerIdle();
     }
-    return await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a),
+    let res = await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a),
       ["afterfill", { id, value: String(value), clear, pick, keep_focus }]) || { ok: true };
+    if (res && res.needs_enter) {   // Workday's search boxes list their options only after a real Enter
+      await debuggerOn(tabId);
+      try {
+        const send = (params) => chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", params);
+        await send({ type: "rawKeyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await send({ type: "char", key: "Enter", code: "Enter", text: "\r", windowsVirtualKeyCode: 13 });
+        await send({ type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      } finally {
+        debuggerIdle();
+      }
+      res = await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a), ["pickafter", { id, value: String(value) }]) || res;
+    }
+    return res;
   },
 
   async upload_native({ frame = 0, id, path }) {

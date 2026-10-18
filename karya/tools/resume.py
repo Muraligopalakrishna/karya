@@ -225,10 +225,41 @@ def _save_risk(args: dict) -> tuple[str, str]:
     "resume": P("object", "Resume object (see schema)"),
 }, required=["resume"], risk=_save_risk, group="resume")
 def save_resume_data(resume):
+    """The master resume is updated, never replaced by a part of it: parts that aren't sent stay as they were
+    (2026-10-18: a save of just {"years_experience": ...} wiped the whole resume). The previous version is kept in
+    data/resume_backups."""
     data = _as_dict(resume)
+    old = load_master() or {}
+    if old:
+        backup_master()
+        data = {**old, **data}
     MASTER_FILE.parent.mkdir(parents=True, exist_ok=True)
     MASTER_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"saved": True, "skills": _skill_list(data), "next": "build_resume to make a PDF."}
+    kept = sorted(set(old) - set(_as_dict(resume))) if old else []
+    return {"saved": True, "skills": _skill_list(data), "kept_as_before": kept, "next": "build_resume to make a PDF."}
+
+
+BACKUPS_KEPT = 15
+
+
+def backup_master() -> None:
+    """A copy of the master resume as it is now (the last BACKUPS_KEPT are kept)."""
+    if not MASTER_FILE.exists():
+        return
+    folder = MASTER_FILE.with_name("resume_backups")
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = folder / f"resume_master-{stamp}.json"
+    n = 1
+    while target.exists():
+        n += 1
+        target = folder / f"resume_master-{stamp}-{n}.json"
+    target.write_text(MASTER_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    for old in sorted(folder.glob("resume_master-*.json"))[:-BACKUPS_KEPT]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def _e(text) -> str:

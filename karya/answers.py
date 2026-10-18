@@ -103,10 +103,14 @@ def short(question: str) -> str:
     return q[:90] + ("..." if len(q) > 90 else "")
 
 
+def _usable(question: str, value) -> bool:
+    return not is_secret_question(question) and not is_prompt_text(str(value or ""), question)
+
+
 def saved_answers() -> dict[str, str]:
     prof = memory_store.load().get("profile", {})
     answers = prof.get("screening_answers")
-    return {k: v for k, v in answers.items() if not is_secret_question(k)} if isinstance(answers, dict) else {}
+    return {k: v for k, v in answers.items() if _usable(k, v)} if isinstance(answers, dict) else {}
 
 
 # A password typed into a question card was once saved here in plain text (2026-10-06). These are never stored or used.
@@ -124,7 +128,7 @@ def saved_answer(question: str) -> str | None:
     prof = memory_store.load().get("profile", {})
     category = classify(question)
     field = CATEGORIES[category][0] if category else None
-    if field and prof.get(field) not in (None, ""):
+    if field and prof.get(field) not in (None, "") and not is_prompt_text(str(prof[field]), question):
         return str(prof[field])
     if is_secret_question(question):
         return None
@@ -150,7 +154,43 @@ def _same(value: str, saved: str) -> bool:
         return False
     if a == b or a.startswith(b) or b.startswith(a):
         return True
-    return len(b) >= 4 and (b in a or a in b)
+    if len(b) >= 4 and (b in a or a in b):
+        return True
+    return _same_years(value, saved)
+
+
+_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:-|to|–)?\s*(\d+(?:\.\d+)?)?\s*(?:years?|yrs?)?", re.I)
+
+
+def _range(text: str) -> tuple[float, float] | None:
+    """A number of years as a range: "1" -> (1, 1); "1-2 years" -> (1, 2); "Less than 1 year" -> (0, 1);
+    "More than 10" -> (10, 99); "fresher" / "none" -> (0, 0)."""
+    low = str(text or "").lower()
+    if re.search(r"\b(fresher|none|no experience|zero)\b", low):
+        return (0.0, 0.0)
+    m = _YEARS.search(low)
+    if not m:
+        return None
+    a = float(m.group(1))
+    b = float(m.group(2)) if m.group(2) else None
+    if re.search(r"\b(less than|under|below|<)", low):
+        return (0.0, a)
+    if re.search(r"\b(more than|over|above|at least)\b|\+|plus", low):
+        return (a, 99.0)
+    return (a, b if b is not None else a)
+
+
+def _same_years(value: str, saved: str) -> bool:
+    """The form's option says the user's number of years ("1-2 years" for "1", "Less than 1 year" for "0")."""
+    if not re.search(r"\d|fresher|none|zero", str(value or ""), re.I) or not re.search(r"\d|fresher|none|zero", str(saved or ""), re.I):
+        return False
+    have, want = _range(saved), _range(value)
+    if not have or not want:
+        return False
+    lo, hi = have
+    if lo == hi:                                    # the user gave one number: the option must contain it
+        return want[0] <= lo <= want[1] and not (want[0] < lo == want[1] and want[0] == 0 and lo > 0 and "less" in str(value).lower())
+    return want == have
 
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
@@ -221,11 +261,28 @@ def check(question: str, value) -> str | None:
     return f'"{short(question)}": the user\'s answer is "{saved}", not "{text[:80]}"'
 
 
+# Karya's own words, never an answer (2026-10-18: its WhatsApp question was read back and saved as the user's
+# answer, so every form value was refused as "not the user's answer").
+_NOT_AN_ANSWER = re.compile(r"^\W*(\[\s*karya\s*\]|i need your answers?\b|approve this\?|karya needs your|"
+                            r"please (send|type) (the|your) answer|reply with (numbers|yes))", re.I)
+
+
+def is_prompt_text(answer: str, question: str = "") -> bool:
+    """The "answer" is really Karya's question or one of its notices (echoed back), or repeats the question."""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    if _NOT_AN_ANSWER.search(text):
+        return True
+    q = _norm(question)
+    return len(q) >= 20 and q in _norm(text)
+
+
 def save(question: str, answer: str) -> None:
     """Remember the user's answer for this question, and as their general answer for facts like notice period."""
     answer = str(answer or "").strip()[:300]
-    if not answer or is_secret_question(question):
-        return  # passwords, PINs and codes belong in the vault (encrypted), never in the profile
+    if not answer or is_secret_question(question) or is_prompt_text(answer, question):
+        return  # passwords, PINs and codes belong in the vault; Karya's own words are never the user's answer
     data = memory_store.load()
     prof = data.setdefault("profile", {})
     answers = prof.get("screening_answers") if isinstance(prof.get("screening_answers"), dict) else {}

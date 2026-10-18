@@ -345,7 +345,7 @@ def test_phone_picks_jobs_by_number_and_answers_questions():
         f1 = loop.create_future()
         hub.asks["k1"] = (f1, {})
         await ch.on_ask({"id": "k1", "kind": "jobs", "jobs": jobs})
-        assert "1. PM 1 - Co1 (Dubai), 80%" in ch.bridge.out[-1]
+        assert "1) PM 1 - Co1 (Dubai), 80%" in ch.bridge.out[-1]          # ")" so WhatsApp doesn't make a list
         await ch.on_message("hmm")                              # not numbers: asked again, nothing picked
         assert not f1.done()
         await ch.on_message("1 and 3")

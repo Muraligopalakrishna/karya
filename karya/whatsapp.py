@@ -114,6 +114,24 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())[:80]
 
 
+def _plain(text: str) -> str:
+    """A message as words only: WhatsApp draws "1. ..." lines as lists and drops their numbers, so Karya's own
+    question came back as different text and was read as the user's answer (2026-10-18). Digits on their own
+    (list numbers) and formatting don't count."""
+    words = re.findall(r"[a-z]{2,}|\d{2,}", str(text or "").lower())
+    return "".join(words)[:200]
+
+
+def own_message(text: str, sent: deque | set) -> bool:
+    """Karya sent this text: an exact match, or the same words in its question once WhatsApp has re-drawn it."""
+    norm, plain = _norm(text), _plain(text)
+    if not norm:
+        return False
+    if norm in sent:
+        return True
+    return len(plain) >= 24 and any(s.startswith("plain:") and s[6:] == plain for s in sent)
+
+
 def is_self_chat(info: dict, owner: str) -> bool:
     """The open chat is the user's own "Message yourself" chat: its title says "(You)", or its messages carry the
     user's own number."""
@@ -124,7 +142,7 @@ def is_self_chat(info: dict, owner: str) -> bool:
 
 
 def new_commands(messages: list[dict], seen: deque, seen_set: set, sent: deque, primed: bool,
-                 stale: list | None = None, now: float | None = None) -> list[str]:
+                 stale: list | None = None, now: float | None = None, sent_ids: set | None = None) -> list[str]:
     """The user's new messages to themselves, oldest first. Old ones are never replayed: before the first look, and
     whenever none of the visible messages has been seen before, everything visible is only marked as seen. A new
     message sent more than STALE_HOURS ago (Karya was off) goes to `stale` instead of being run."""
@@ -139,7 +157,7 @@ def new_commands(messages: list[dict], seen: deque, seen_set: set, sent: deque, 
         if not primed or not known or i < max(known) or not m.get("mine"):
             continue
         text = str(m.get("text") or "").strip()
-        if not text or _norm(text) in sent:
+        if not text or (sent_ids and mid in sent_ids) or own_message(text, sent):
             continue                     # media without a caption, or one of Karya's own messages
         when = msg_time(m.get("stamp") or "")
         if when is not None and (now or time.time()) - when > STALE_HOURS * 3600:
@@ -178,7 +196,9 @@ class WhatsAppBridge:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._out: queue.Queue = queue.Queue()
-        self._sent: deque = deque(maxlen=60)   # Karya's own messages (normalized), kept across restarts
+        self._sent: deque = deque(maxlen=120)  # Karya's own messages (normalized, and as plain words), kept
+        self._sent_ids: deque = deque(maxlen=200)  # ...and the ids WhatsApp gave them once they were on screen
+        self._pending_own: deque = deque(maxlen=20)  # sent, waiting to see their id
         self._seen: deque = deque(maxlen=400)
 
     def start(self) -> None:
@@ -254,7 +274,28 @@ class WhatsAppBridge:
         return False
 
     def _persist(self, welcomed: bool = True) -> None:
-        _save_state({"seen": list(self._seen), "welcomed": welcomed, "sent": list(self._sent)})
+        _save_state({"seen": list(self._seen), "welcomed": welcomed, "sent": list(self._sent),
+                     "sent_ids": list(self._sent_ids)})
+
+    def _claim_ids(self, messages: list[dict]) -> bool:
+        """Messages Karya just sent get their WhatsApp id: from then on they're known as Karya's by id alone."""
+        if not self._pending_own:
+            return False
+        changed = False
+        known = set(self._sent_ids)
+        for m in reversed(messages):
+            mid, text = m.get("id"), str(m.get("text") or "")
+            if not mid or mid in known:
+                continue
+            plain = _plain(text)
+            for i, want in enumerate(self._pending_own):
+                if plain and (plain == want or (len(want) >= 24 and plain.startswith(want[:60]))):
+                    self._sent_ids.append(mid)
+                    known.add(mid)
+                    del self._pending_own[i]
+                    changed = True
+                    break
+        return changed
 
     def _loop(self, page) -> None:
         """Returns when the window is closed (or Karya stops)."""
@@ -262,6 +303,7 @@ class WhatsAppBridge:
         seen: deque = deque(state.get("seen") or [], maxlen=400)
         self._seen = seen
         self._sent.extend(s for s in state.get("sent") or [] if s not in self._sent)
+        self._sent_ids.extend(i for i in state.get("sent_ids") or [] if i not in self._sent_ids)
         seen_set = set(seen)
         primed, welcomed, last_nav, unlinked = bool(seen), bool(state.get("welcomed")), 0.0, False
         failures, last_ids = 0, None
@@ -314,10 +356,13 @@ class WhatsAppBridge:
                 # WhatsApp draws a chat in steps (the newest message first, then the rest): decide what's new only
                 # once the same messages show two looks in a row.
                 settled, last_ids = ids == last_ids, ids
+                if self._claim_ids(messages):
+                    self._persist()
                 if settled:
                     before = len(seen_set)
                     stale: list[str] = []
-                    tasks = new_commands(messages, seen, seen_set, self._sent, primed, stale=stale)
+                    tasks = new_commands(messages, seen, seen_set, self._sent, primed, stale=stale,
+                                         sent_ids=set(self._sent_ids))
                     primed = True
                     if len(seen_set) != before or not welcomed:
                         self._persist()
@@ -353,6 +398,8 @@ class WhatsAppBridge:
                     if line:
                         page.keyboard.insert_text(line)
                 self._sent.append(_norm(body))
+                self._sent.append("plain:" + _plain(body))
+                self._pending_own.append(_plain(body))
                 self._persist()          # before it's on screen: never read back as a task, even after a restart
                 page.keyboard.press("Enter")
                 page.wait_for_timeout(500)

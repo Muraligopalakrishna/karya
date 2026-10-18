@@ -178,6 +178,27 @@ def set_current(job: dict | None, url: str = "") -> None:
     _cur().update(id=job.get("id"), site=_site(url or job.get("url", "")), time=time.time())
 
 
+def working_on() -> dict | None:
+    """The picked job Karya started filling in (its form was opened), while it's still pending."""
+    cur = _cur()
+    if not cur or time.time() - float(cur.get("time") or 0) > CURRENT_SECONDS:
+        return None
+    job = next((j for j in load() if j.get("id") == cur.get("id")), None)
+    return job if job and job.get("status") == "pending" else None
+
+
+def leaving_for(url: str) -> str | None:
+    """Opening another picked job's page while the current one isn't submitted or skipped: why not (or None).
+    2026-10-18: Karya left Cisco's half-filled form for CapsLock, came back, and never submitted either."""
+    cur = working_on()
+    target = find_by_url(url)
+    if not cur or not target or target.get("id") == cur.get("id") or target.get("status") != "pending":
+        return None
+    return (f'NOT OPENED: you are in the middle of {cur["id"]} "{cur["title"]}" at {cur["company"]}. Finish it first: '
+            "fill what's left and click Submit (the user approves), or, if it really can't be done, "
+            f'application_queue(action="skip", job_id="{cur["id"]}", reason=...). Then open {target["id"]}.')
+
+
 def current_for(url: str) -> dict | None:
     """The job being applied to, when this page is on the same site and the application started recently."""
     if not _cur() or time.time() - float(_cur().get("time") or 0) > CURRENT_SECONDS:
@@ -243,17 +264,40 @@ _DONE_WORDS = re.compile(r"\b(done|applied|did|finished|submitted|manually|mysel
 
 
 def done_by_user(text: str) -> list[dict]:
-    """Picked jobs the user says they already did ("SPOT DRAFT IS DONE", "I did LoansJagat manually"): marked
-    applied so Karya never does them again."""
-    if not _DONE_WORDS.search(text or ""):
+    """Picked jobs the user clearly says they already did themselves ("SPOT DRAFT IS DONE", "I did LoansJagat
+    manually", "applied to Cisco myself"): marked applied so Karya never does them again.
+
+    Only a clear statement counts. 2026-10-18: a message that named Cisco and said "applied" in another sense
+    marked two Cisco jobs as done mid-application, and Karya moved on without submitting. Questions ("did you apply
+    to Cisco?"), negations ("Cisco isn't done", "not applied"), requests ("apply to Cisco") and messages about what
+    Karya did ("you applied to Cisco") never count."""
+    text = str(text or "")
+    if not _DONE_WORDS.search(text) or len(text) > 300 or "?" in text or _NOT_DONE.search(text):
         return []
-    squashed = re.sub(r"[^a-z0-9]", "", (text or "").lower())
     marked = []
     for job in load():
-        name = re.sub(r"[^a-z0-9]", "", (job.get("company") or "").lower())
-        if job.get("status") != "applied" and len(name) >= 4 and name in squashed:
+        name = (job.get("company") or "").strip()
+        if job.get("status") == "applied" or len(re.sub(r"[^a-z0-9]", "", name.lower())) < 4:
+            continue
+        if _says_done(text, name):
             marked.append(mark(job["id"], "applied", "you applied yourself") or job)
     return marked
+
+
+_NOT_DONE = re.compile(r"\b(not|isn'?t|wasn'?t|hasn'?t|haven'?t|didn'?t|don'?t|never|no)\b|\byet\b|\b(why|did you|have you|"
+                       r"you (applied|did|submitted|finished))\b|\b(apply|submit|finish|complete)\b(?!\w)(?<!\bdid\b)", re.I)
+
+
+def _says_done(text: str, company: str) -> bool:
+    """The company and a done-word sit in one short clause: "Cisco is done", "did Cisco myself", "applied to Cisco
+    manually", "Cisco: applied"."""
+    # the name with or without spaces, dots and dashes between its letters ("SPOT DRAFT" is "Spotdraft")
+    letters = [c for c in re.sub(r"[^a-z0-9]", "", company.lower())]
+    name = r"[\s.\-&]*".join(re.escape(c) for c in letters)
+    near = rf"(.{{0,40}}?)"
+    return bool(re.search(rf"\b{name}\b{near}\b(done|applied|did|finished|submitted|completed)\b", text, re.I) or
+                re.search(rf"\b(done|applied|did|finished|submitted|completed)\b(?:\s+(?:to|for|with|at|the))?{near}\b{name}\b",
+                          text, re.I))
 
 
 _ALREADY = re.compile(r"\bapplied\s+(\d+|an?)\s+(second|minute|hour|day|week|month)s?\s+ago\b|"

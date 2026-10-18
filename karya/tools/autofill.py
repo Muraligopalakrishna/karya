@@ -93,7 +93,43 @@ def _empty(it: dict) -> bool:
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+    """Lower case, words only, accents dropped ("Telangāna" is "telangana": Workday spells Indian states that way)."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()
+
+
+# A degree as forms name it, best first. Only the same degree: a B.Tech is never "Bachelor of Science".
+_DEGREES = (
+    (r"\bb\.?\s?tech\b|bachelor of technology", ("bachelor of technology", "btech", "b tech", "bachelor of engineering",
+                                                  "b e", "be", "bachelor s degree", "bachelors degree", "bachelor degree",
+                                                  "bachelor s", "bachelors", "bachelor", "undergraduate degree")),
+    (r"\bb\.?\s?e\b|bachelor of engineering", ("bachelor of engineering", "b e", "be", "bachelor of technology", "btech",
+                                                "bachelor s degree", "bachelors degree", "bachelor degree", "bachelors")),
+    (r"\bm\.?\s?tech\b|master of technology", ("master of technology", "mtech", "m tech", "master of engineering",
+                                                "master s degree", "masters degree", "master degree", "masters")),
+    (r"\bmba\b|master of business", ("master of business administration", "mba", "master s degree", "masters degree")),
+    (r"\bb\.?\s?sc\b|bachelor of science", ("bachelor of science", "bsc", "b sc", "bachelor s degree", "bachelors degree")),
+    (r"\bb\.?\s?com\b|bachelor of commerce", ("bachelor of commerce", "bcom", "b com", "bachelor s degree", "bachelors degree")),
+)
+
+
+_GENERIC = {"bachelor", "bachelors", "bachelor s", "bachelor degree", "bachelors degree", "bachelor s degree", "master",
+            "masters", "master s", "master degree", "masters degree", "master s degree", "undergraduate degree", "b e", "be"}
+
+
+def _degree_pick(real: list[tuple[str, str]], answer: str) -> str | None:
+    for pattern, names in _DEGREES:
+        if re.search(pattern, answer, re.I):
+            for name in names:
+                if name in _GENERIC:      # "Bachelor's degree", never "Bachelor of Science"
+                    hits = [o for o, n in real if n in (name, name + " degree", name + " s degree")]
+                else:                     # "Bachelor of Technology (B.Tech)" is fine
+                    hits = [o for o, n in real if n == name or n.startswith(name + " ")]
+                if len(hits) == 1:
+                    return hits[0]
+            return None
+    return None
 
 
 def pick_option(options: list[str], answer: str) -> str | None:
@@ -114,7 +150,7 @@ def pick_option(options: list[str], answer: str) -> str | None:
         hits = [o for o, n in real if test(n)]
         if len(hits) == 1:
             return hits[0]
-    return None
+    return _degree_pick(real, str(answer))
 
 
 def _profile_value(it: dict, profile: dict) -> str | None:

@@ -17,6 +17,11 @@ from .registry import CONFIRM, P, tool
 CHANNEL: "PhoneChannel | None" = None
 _YES = re.compile(r"^\W*(y|yes|yeah|yep|yup|ok|okay|approve[d]?|go( ahead)?|do it|sure|haan?|ha|han|ji)\b", re.I)
 _NO = re.compile(r"^\W*(n|no|nope|deny|denied|don'?t|do not|cancel|nahi|nah|na)\b", re.I)
+# How Karya's own messages begin ("[Karya] I need your answer:", "[Karya] Approve this?"): if one is read back from
+# the chat it's never the user's reply (2026-10-18: Karya answered its own question 26 times).
+_KARYA_SAYS = re.compile(r"^\s*\[\s*karya\s*\]\s*(i need your answers?|approve this\?|which jobs should i apply|"
+                         r"[\w .'-]{1,40} asks:|got it\.|approved|ok, not doing that|on it\.|stopped|nothing is|"
+                         r"[\w .'-]{1,40} needs a login|[\w .'-]{1,40} sent you a one-time|while i was off|linked\.)", re.I)
 _TO_KARYA = re.compile(r"^\s*(?:\[\s*karya\s*\]|@karya\b|karya\s*[:,\-])\s*", re.I)   # "[Karya] ...", "Karya, ..."
 _BARE = re.compile(r"^\W*(y|yes|yeah|yep|ok|okay|approve[d]?|sure|n|no|nope|deny|nahi|na)\W*$", re.I)
 HELP = ("Send me any task, e.g. \"find PM jobs in Dubai and apply\" or \"what's the gold sentiment\". Give a task to "
@@ -102,15 +107,17 @@ class PhoneChannel:
                      f"and I couldn't find it in your email. Reply with just the code.{tail}")
         elif request.get("kind") == "jobs":
             rows = entry["rows"]
-            lines = [f"{n}. {r.get('title', '')[:70]} - {r.get('company', '')} ({r.get('location') or '?'}), "
+            lines = [f"{n}) {r.get('title', '')[:70]} - {r.get('company', '')} ({r.get('location') or '?'}), "
                      f"{r.get('match', '?')}%" for n, r in enumerate(rows, 1)]
             self.say(f"{who}Which jobs should I apply to? Reply with numbers (e.g. 1 3 5), ALL or NONE.\n"
                      + "\n".join(lines) + tail)
         else:
             qs = request.get("questions") or []
-            lines = [f"{n}. {q.get('q', '')}" + (f" (e.g. {q.get('hint') or (q.get('options') or [''])[0]})"
-                                                   if q.get("hint") or q.get("options") else "")
-                     for n, q in enumerate(qs, 1)]
+            def ask_line(n, q):
+                options = [str(o) for o in q.get("options") or []][:8]
+                extra = (" Choose one: " + " / ".join(options)) if options else (f" (e.g. {q['hint']})" if q.get("hint") else "")
+                return (f"{n}) " if len(qs) > 1 else "") + str(q.get("q", "")) + extra
+            lines = [ask_line(n, q) for n, q in enumerate(qs, 1)]
             self.say(who + ("I need your answer:\n" if len(qs) == 1 else
                             "I need your answers, one line each, in this order:\n") + "\n".join(lines) + tail)
 
@@ -162,6 +169,8 @@ class PhoneChannel:
     # ----- phone -> Karya
     async def on_message(self, text: str) -> None:
         text = str(text or "").strip()
+        if _KARYA_SAYS.match(text):
+            return                       # Karya's own words read back from the chat (never an answer or a task)
         text = _TO_KARYA.sub("", text, count=1).strip() or text
         low = text.lower()
         hub = self.hub

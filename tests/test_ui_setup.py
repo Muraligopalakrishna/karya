@@ -17,6 +17,16 @@ from .conftest import FakeLLM, reply, tool_call
 pytestmark = [pytest.mark.browser, pytest.mark.skipif(sys.platform != "win32", reason="vault uses Windows DPAPI")]
 
 
+def _saved(env, text, timeout=10.0):
+    """Skip and Finish close the guide at once and save in the background: wait for the save."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if text in env.read_text(encoding="utf-8"):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def _free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -81,7 +91,7 @@ def test_guide_setup_tabs_and_login_card(tmp_path, monkeypatch):
             assert page.inner_text("#guide .guide-next") == "Skip for now"          # no AI yet
             page.click("#guide button:has-text('Skip setup')")
             page.wait_for_selector("#guide", state="hidden", timeout=5000)
-            assert "KARYA_ONBOARDED=skipped" in env.read_text(encoding="utf-8")
+            assert _saved(env, "KARYA_ONBOARDED=skipped")
             page.wait_for_selector("#notice:has-text('no AI to think with')", timeout=5000)
             assert page.inner_text("#provider-label") == "No AI connected"
             assert page.locator(".idea").count() == 6
@@ -143,7 +153,7 @@ def test_guide_setup_tabs_and_login_card(tmp_path, monkeypatch):
             assert page.inner_text("#guide .guide-next") == "Finish"
             page.click("#guide .guide-next")
             page.wait_for_selector("#guide", state="hidden", timeout=5000)
-            assert "KARYA_ONBOARDED=true" in env.read_text(encoding="utf-8")
+            assert _saved(env, "KARYA_ONBOARDED=true")
 
             # Setup > AI: a key that fits two services asks which one
             page.click("#setup-btn")

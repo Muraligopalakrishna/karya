@@ -251,6 +251,8 @@ def test_any_provider_from_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("LLM_PROVIDERS", raising=False)
     monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
     monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    for flag in ("KIRO_LOGIN", "CLAUDE_ENABLED", "CODEX_ENABLED"):     # sign-ins from the developer's own setup
+        monkeypatch.delenv(flag, raising=False)
     monkeypatch.setenv("OLLAMA_ENABLED", "false")
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test_placeholder")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")

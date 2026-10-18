@@ -1065,7 +1065,8 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}/?token={token}"
     open_browser = "--no-browser" not in sys.argv
     if _karya_already_running(port):
-        print("\n  Karya is already running. Chat page: " + url + "\n", flush=True)
+        if sys.stdout is not None and sys.stdout.isatty():
+            print("\n  Karya is already running. Chat page: " + url + "\n", flush=True)
         if open_browser:
             _show_window(port, token)
         return
@@ -1078,7 +1079,11 @@ def main() -> None:
         write_extension_config(port, token)  # lets Karya Browser Link (in your own Chrome) connect by itself
     except OSError as exc:
         print(f"  (Couldn't write the browser extension's config: {exc})", flush=True)
-    print("\n  Karya is running. Open this link (keep it private):\n  " + url + "\n", flush=True)
+    console = sys.stdout is not None and sys.stdout.isatty()
+    if console:      # the private link only on a screen, never in the background log (data/logs/karya.log)
+        print("\n  Karya is running. Open this link (keep it private):\n  " + url + "\n", flush=True)
+    else:
+        print(f"\n  Karya is running on port {port}.", flush=True)
     print("  AI providers: " + (", ".join(p.label for p in settings.providers) or "NONE - add a key to .env"), flush=True)
     if sys.stdout is not None and sys.stdout.isatty():
         print("  Keep this window open while you use Karya. Close it to stop Karya.\n", flush=True)

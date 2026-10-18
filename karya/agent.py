@@ -277,6 +277,8 @@ class Agent:
         self._task_info: dict = {}
         self._critical_ok: list[str] = []
         self._auto_count = 0
+        self._asked_counts: dict[str, int] = {}
+        self._chose_once = False
         from . import answers as answers_mod
         if self.note_user:
             for m in [m for m in self.history if m.get("role") == "user"][-4:]:
@@ -383,6 +385,8 @@ class Agent:
         self._keep_going = bool(settings.keep_going or self._task_info.get("keep_going"))
         self._critical_ok: list[str] = []
         self._auto_count = 0
+        self._asked_counts: dict[str, int] = {}
+        self._chose_once = False
         from . import answers as answers_mod
         if self.note_user or user_words:
             answers_mod.note_user_message(user_text if self.note_user else user_words)
@@ -410,6 +414,8 @@ class Agent:
             from .tools import jobs as jobs_tools
             await asyncio.to_thread(jobs_tools.track_application, job.get("company", ""), job.get("title", ""),
                                     job.get("url", ""), "applied", "you applied yourself")
+            await emit({"type": "note", "text": f'Marked {job.get("company")} ({job.get("title")}) as applied by you, '
+                                                "so Karya won't apply to it. Say \"not done\" if that's wrong."})
         # Only a job request (or a short "continue" right after a job run) carries on with the picked jobs.
         # A bot has its own pick list (apply_queue.queue_file), so it carries on with its own picks, never the chat's.
         self._queue_task = bool(apply_queue.pending()) and apply_queue.wanted_in(user_words if self.bot else user_text)
@@ -658,6 +664,15 @@ class Agent:
 
     async def _choose_jobs(self, call_id: str, args: dict) -> str:
         from .tools import jobs as jobs_mod
+        if self.bot:   # a bot never floods the user with pick lists (Maya's 9:00 run sent three)
+            job = f'{self.bot.get("task", "")} {self.bot.get("_task_now", "")}'
+            if re.search(r"\b(don'?t|do not|never|no need to|not to)\s+apply\b|\bonly (report|list)\b|\bjust (report|list)\b", job, re.I):
+                return ("NOT SHOWN: your job is to report jobs, not to apply. Put the best ones in your report "
+                        "(title, company, city, match, link); it reaches the user's WhatsApp by itself.")
+            if getattr(self, "_chose_once", False):
+                return ("NOT SHOWN again: you already showed the user a pick list in this run. Use what they picked, "
+                        "or put the jobs in your report.")
+            self._chose_once = True
         try:
             data = json.loads(jobs_mod.last_jobs_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -795,6 +810,17 @@ class Agent:
                     "for every job, saved on the user's resume, so no form asks again.")
         if self.ask is None:
             return "ERROR: can't show a form here. Ask the user in your reply instead."
+        asked = self._asked_counts if hasattr(self, "_asked_counts") else {}
+        self._asked_counts = asked
+        again = [q["q"] for q in questions if asked.get(answers._norm(q["q"]), 0) >= 2]
+        if again:
+            saved = answers.saved_answer(again[0])
+            return (f'NOT ASKED: you already asked "{again[0]}" twice in this task'
+                    + (f' and the user\'s answer is "{saved}". Use it: pick the form option that says the same thing '
+                       '(e.g. "1-2 years" for "1"); if no option fits, tell the user which options there are.'
+                       if saved else ". Don't ask again: tell the user what's blocking and move on.") )
+        for q in questions:
+            asked[answers._norm(q["q"])] = asked.get(answers._norm(q["q"]), 0) + 1
         items = [{**q, "value": answers.saved_answer(q["q"]) or ""} for q in questions]
         reply = await self.ask({"id": call_id, "kind": "questions", "reason": str(args.get("reason", ""))[:300],
                                 "questions": items})

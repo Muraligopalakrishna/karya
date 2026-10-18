@@ -82,7 +82,9 @@ def screen_privacy_js() -> str:
 _CRITICAL_WORDS = re.compile(
     r"\b(post|publish|tweet|reply|send|submit|apply|share|pay|buy|purchase|order|checkout|delete|remove|confirm|"
     r"donate|transfer|subscribe|unsubscribe|bid|comment|repost|follow|connect|withdraw|accept|decline|"
-    r"sign ?up|register|create account|book now|place)\b", re.I)
+    r"sign ?up|register|create account|book now|place|approve|authori[sz]e|grant|allow)\b", re.I)
+# "Allow cookies" is only a banner (Karya closes those itself); "Allow" on a consent screen gives an app access.
+_COOKIE_OK = re.compile(r"^\W*(allow|accept)( all)?( cookies?| essential cookies| necessary cookies)\W*$", re.I)
 _MEDIUM_WORDS = re.compile(r"\b(like|upvote|downvote|react|save|update|edit|invite|join|rsvp|enrol+|message)\b", re.I)
 _HARMLESS = re.compile(r"\b(search|find|go|filter|show results|next|previous|continue|back|close|cancel|dismiss|"
                        r"ok|got it|skip|not now|later|log ?in|sign ?in)\b", re.I)
@@ -125,7 +127,7 @@ def classify_click(item: dict | None, label: str, url: str = "") -> str:
         return CONFIRM
     if _IG_CREATE.match(text) and re.search(r"(^|\.)instagram\.com$", host) and not _comment_typed():
         return SAFE    # Instagram's Create menu: "Post" only opens the upload window; its final button is "Share"
-    if _OPENER.search(text) or _VIEWER.search(text):
+    if _OPENER.search(text) or _VIEWER.search(text) or _COOKIE_OK.match(text):
         return SAFE
     if _CRITICAL_WORDS.search(text):
         return CRITICAL
@@ -170,7 +172,7 @@ def captcha_problem(item: dict | None) -> str | None:
 
 
 def is_search_field(item: dict | None) -> bool:
-    if not item:
+    if not item or item.get("prompt"):     # Workday's "Search" boxes inside a form are form fields
         return False
     text = " ".join(str(item.get(k, "")) for k in ("label", "placeholder", "name")).lower()
     return (item.get("type") == "search" or item.get("role") == "searchbox"
@@ -183,6 +185,8 @@ _NOT_PLACE = re.compile(r"e-?mail|phone|mobile|\bcode\b|zip|postal|pin ?code", r
 
 def wants_pick(item: dict | None) -> bool:
     """Text fields whose value should be chosen from the page's suggestion list (comboboxes, location fields)."""
+    if item and item.get("prompt"):
+        return True
     if not item or is_search_field(item) or item.get("tag") not in ("input", "textarea", None):
         return False
     text = f"{item.get('label', '')} {item.get('name', '')}"
@@ -952,6 +956,10 @@ class BrowserSession(_Common):
                 pass
             if combo:
                 picked = self._pick_suggestion(item["id"], text)
+                if not picked and item.get("prompt"):     # Workday: the options show only after Enter
+                    loc.press("Enter")
+                    page.wait_for_timeout(700)
+                    picked = self._pick_suggestion(item["id"], text)
         self.last_typed = item or {"label": label or ""}
         if submit:
             loc.press("Enter")
@@ -1197,8 +1205,23 @@ class BrowserSession(_Common):
         return [{"index": i, "title": p.title()[:80], "url": p.url[:150], "active": p == self.page} for i, p in enumerate(pages)]
 
     def wait(self, seconds=3):
+        """Up to `seconds`, but no longer than the page needs: done once its text stops changing."""
         self._ensure()
-        self.page.wait_for_timeout(max(0.5, min(float(seconds), 30)) * 1000)
+        limit = max(0.5, min(float(seconds), 30))
+        end, last, steady = time.time() + limit, None, 0
+        self.page.wait_for_timeout(500)
+        while time.time() < end:
+            try:
+                text = self.page.main_frame.evaluate("() => document.body ? document.body.innerText.slice(-4000) : ''")
+            except Exception:  # noqa: BLE001 - the page is navigating
+                text = None
+            busy = text is None or bool(re.search(r"\bloading\b|please wait", text[-600:] if text else "", re.I))
+            sig = (self.page.url, len(text or ""), (text or "")[-300:])
+            steady = steady + 1 if (sig == last and not busy) else 0
+            if steady >= 2:
+                break
+            last = sig
+            self.page.wait_for_timeout(400)
         return self._snapshot(max_items=80, text_chars=1200)
 
     # ----- positions: canvas, maps, game boards (real mouse) -----
@@ -1443,6 +1466,9 @@ class ExtensionSession(_Common):
             extra = f" and picked \"{result['picked']}\""
         elif result.get("combo") and result.get("options"):
             extra = "; no suggestion matched. Suggestions: " + " | ".join(result["options"])
+        elif result.get("combo") and result.get("none"):
+            extra = ("; the list found nothing for it. Try a shorter or different name (e.g. without the city), "
+                     "or the closest option it offers")
         return f"Typed {len(text)} chars into \"{item.get('label', '')}\"{extra}."
 
     def fill_many(self, fields: dict):
@@ -1665,7 +1691,23 @@ class ExtensionSession(_Common):
         return (self._req("tabs", action="list") or {}).get("tabs") or []
 
     def wait(self, seconds=3):
-        time.sleep(max(0.5, min(float(seconds), 30)))
+        """Up to `seconds`, but no longer than the page needs: done once its text stops changing."""
+        limit = max(0.5, min(float(seconds), 30))
+        end, last, steady = time.time() + limit, None, 0
+        time.sleep(0.5)
+        while time.time() < end:
+            try:
+                info = self._req("settle", timeout=20, ms=0) or {}
+                text = (self._req("text", max_chars=4000) or {}).get("text") or ""
+            except RuntimeError:
+                break
+            busy = bool(re.search(r"\bloading\b|please wait", text[-600:], re.I))
+            sig = (info.get("url"), len(text), text[-300:])
+            steady = steady + 1 if (sig == last and not busy) else 0
+            if steady >= 2:
+                break
+            last = sig
+            time.sleep(0.4)
         return self._snapshot(max_items=80, text_chars=1200)
 
     # ----- positions: canvas, maps, game boards -----
@@ -2247,11 +2289,22 @@ def _check_already_applied(result):
                                     if left else ""))
 
 
+def _open_precheck(args: dict) -> str | None:
+    from .. import apply_queue
+    url = str(args.get("url") or "")
+    wa = _WA_NUMBER.search(url)
+    if wa:
+        problem = _number_problem(wa.group(1))
+        if problem:
+            return problem
+    return apply_queue.leaving_for(url)
+
+
 @tool("browser_open", "Open a URL in the browser (Karya's own tab in the user's Chrome when Karya Browser Link is "
       "connected, otherwise Karya's Chrome window; logins are kept). Returns a snapshot of the page.", {
     "url": P("string", "URL to open"),
     "new_tab": P("boolean", "Open in a new tab"),
-}, required=["url"], group="browser")
+}, required=["url"], precheck=_open_precheck, group="browser")
 def browser_open(url: str, new_tab: bool = False):
     from .. import apply_queue
     result = _run("open", url, new_tab)
@@ -2286,6 +2339,7 @@ def browser_click(element_id: int | None = None, text: str | None = None, double
     before = _current().url
     item = _item({"element_id": element_id, "text": text})
     posting = bool(item) and is_post_click(item, item.get("label") or "", before)
+    fields_before = set(_current().items)
     result = _run("click", element_id, text, double)
     if isinstance(result, str) and "RESULT: SUBMITTED" in result:
         if posting:
@@ -2302,7 +2356,13 @@ def browser_click(element_id: int | None = None, text: str | None = None, double
             and not is_submit_click(item, item.get("label") or "", before):
         from . import autofill   # Apply opened the form, or Next showed its next page: fill what Karya knows
         result += autofill.after_open(_current().url)
+    elif isinstance(result, str) and result.startswith("Clicked") and item and _ADDS_BLOCK.search(item.get("label") or ""):
+        result += _more_fields(fields_before)   # "Add" (another job, school): fill the new block from the resume
     return result
+
+
+# Buttons that add a block of fields to a form (Workday's "Add" / "Add Another" under Work Experience, Education).
+_ADDS_BLOCK = re.compile(r"^\W*add( another| more| new)?\b(?!.*\b(to cart|to bag|friend|connection|comment)\b)", re.I)
 
 
 # Clicks after which a picked job's form (or its next page) is on screen.
@@ -2522,11 +2582,42 @@ COMPOSERS = {
 LAST_COMPOSE: dict[str, str] = {}   # host -> text put in its composer (recorded when the Post is confirmed)
 
 
+_WA_NUMBER = re.compile(r"(?:wa\.me/|(?:web|api)\.whatsapp\.com/send/?\?(?:[^#]*&)?phone=)\+?([\d%20\-]{6,24})", re.I)
+
+
+def unknown_number(digits: str) -> bool:
+    """A phone number Karya may message: the user's own, or one the user wrote in their own words."""
+    from .. import answers
+    from .. import phone as phone_mod
+    digits = re.sub(r"\D", "", str(digits or ""))
+    if not digits:
+        return False
+    tail = digits[-10:]
+    own = phone_mod.owner_number()
+    if own and own[-10:] == tail:
+        return False
+    said = re.sub(r"[^\d]", "", " ".join(answers.RECENT_USER))
+    return tail not in said
+
+
+def _number_problem(digits: str) -> str | None:
+    if unknown_number(digits):
+        start = re.sub(r"\D", "", digits)[:4]
+        return ("NOT OPENED: Karya only messages phone numbers the user gave it (their own, or one in their message). "
+                f"{start}... isn't one of them, so don't message it. If the user wants a report, just reply: bots' and "
+                "phone tasks' answers reach the user's WhatsApp by themselves.")
+    return None
+
+
 def _compose_precheck(args) -> str | None:
     from .. import outbox
     template = COMPOSERS.get(str(args.get("platform", "")).lower())
     if not template:
         return None
+    if str(args.get("platform", "")).lower() == "whatsapp":
+        problem = _number_problem(str(args.get("phone") or ""))
+        if problem:
+            return problem
     host = urlparse(template).netloc.lower()
     limit = settings.max_posts_per_day
     if limit and outbox.posts_today() >= limit:
@@ -2548,7 +2639,7 @@ def _compose_precheck(args) -> str | None:
     "text": P("string", "Post / message text"),
     "title": P("string", "Title (Reddit)"),
     "subreddit": P("string", "Subreddit name without r/ (Reddit)"),
-    "phone": P("string", "Phone with country code, digits only, e.g. 919876543210 (WhatsApp)"),
+    "phone": P("string", "WhatsApp only: the number the user gave you, with country code, digits only"),
 }, required=["platform", "text"], group="browser", precheck=_compose_precheck,
       summary=lambda a: f"Open {a.get('platform')} composer with your text (not posted yet)")
 def social_compose(platform: str, text: str, title: str = "", subreddit: str = "", phone: str = ""):

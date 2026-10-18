@@ -1202,7 +1202,8 @@ def application_queue(action: str = "status", job_id: str = "", reason: str = ""
         if not job_id:
             return "ERROR: give job_id"
         if action == "skip" and re.search(r"\b(years?|yrs|experience|senior|seniority|fit|qualif|overqualif|underqualif|"
-                                          r"skills? questions?|suggested skills?)\b", reason or "", re.I):
+                                          r"skills? questions?|suggested skills?)\b", reason or "", re.I) \
+                and not _FORM_PROBLEM.search(reason or ""):
             return ("NOT SKIPPED: the user already chose to apply to this job. Experience requirements are the company's "
                     "call and suggested skills are optional, so apply anyway and answer the form truthfully. Skip only "
                     "when applying is impossible (closed posting, a login you don't have, a broken form).")
@@ -1218,6 +1219,14 @@ def application_queue(action: str = "status", job_id: str = "", reason: str = ""
             track_application(job.get("company", ""), job.get("title", ""), job.get("url", ""), "applied",
                               method="you applied yourself")
     return apply_queue.status_text()
+
+
+# A field the form won't take, or an answer only the user can give that they didn't: a real reason to skip, even when
+# the field is about experience (2026-10-18: "unable to save the years-of-experience answer" was refused as a skip).
+_FORM_PROBLEM = re.compile(r"\b(can'?t|cannot|could not|couldn'?t|unable to|won'?t|doesn'?t|does not|didn'?t|did not)\s+"
+                           r"(be\s+)?(fill|save|select|choose|take|accept|answer|enter|type|pick)|\bstuck\b|\bbroken\b|"
+                           r"\b(user|they) (didn'?t|did not|hasn'?t|has not) answer|needs? (your|the user'?s) answer|"
+                           r"\bno answer\b|\bform (error|bug|problem)", re.I)
 
 
 # Skip reasons that second-guess what the user picked (the AI once dropped a picked job "because the user wants Dubai").

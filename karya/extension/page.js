@@ -58,7 +58,16 @@
       el.getAttribute("aria-haspopup") === "listbox" || (el.tagName === "INPUT" && el.hasAttribute("list")) ||
       /^(start typing|search for|type to search)/i.test(el.getAttribute("placeholder") || "");
   }
+  // Workday's search-and-pick boxes ("School or University", "Field of Study", "Skills"): typing shows nothing until
+  // Enter is pressed, then the matching options appear and one is clicked (2026-10-18: Cisco's school never took).
+  function promptLike(el) {
+    if (!el || el.tagName !== "INPUT" || !el.closest) return false;
+    const own = el.getAttribute("data-automation-id") || "";
+    return /^searchBox$|multiselect|prompt/i.test(own) ||
+      !!el.closest('[data-uxi-widget-type="multiselect"], [data-automation-id*="multiselectInputContainer" i], [data-automation-id*="promptSearch" i]');
+  }
   function isSearch(el) {
+    if (promptLike(el)) return false;     // its placeholder says "Search", but it's a form field
     const text = [el.getAttribute("placeholder"), el.getAttribute("aria-label"), el.getAttribute("name"), el.type].join(" ");
     return el.type === "search" || el.getAttribute("role") === "searchbox" || /\bsearch\b|\bquery\b|^q$/i.test(text);
   }
@@ -204,6 +213,7 @@
           if (chosen) it.value = chosen.slice(0, 80);
         }
       }
+      if (promptLike(el)) it.prompt = true;
       if (isControl(el) || shortButton(el)) {
         const q = questionOf(el);
         if (q && q !== it.label) it.question = q.slice(0, 160);
@@ -555,18 +565,22 @@
     }
   }
   const OPTION_SEL = '[role="option"], [role="listbox"] li, .pac-item, [data-option-index], .dropdown-location, ' +
+    '[data-automation-id="promptOption"], [data-automation-id*="promptLeafNode" i], ' +
     '[class*="dropdown-results" i] > *, [class*="autocomplete" i] li, [class*="suggestion" i] li, [class*="suggestions" i] > div';
   const optionNodes = () => deepAll(OPTION_SEL)
-    .filter((o) => shown(o) && clean(o.innerText) && clean(o.innerText).length <= 120 && !o.querySelector("input,select,textarea"));
+    .filter((o) => shown(o) && clean(o.innerText) && clean(o.innerText).length <= 120 &&
+      (!o.querySelector("input,select,textarea") || /promptOption|promptLeaf/i.test(o.getAttribute("data-automation-id") || "")));
   // The option that really is what was asked for: exact, starts with it as whole words ("Hyderabad" ->
   // "Hyderabad, Telangana, India"), or contains every typed word ("Hyderabad, India" -> "Hyderabad, Telangana, India").
   // "India" never picks "Indianapolis" or some Indian city: no good match -> null, and Karya shows the list instead.
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const wordRe = (w) => new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRe(w)}($|[^\\p{L}\\p{N}])`, "u");
+  // Accents and marks don't count: Workday lists "Telangāna" and "Mahārāshtra" (2026-10-18).
+  const fold = (s) => clean(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   function bestMatch(texts, value) {
-    const want = clean(value).toLowerCase();
+    const want = fold(value);
     if (!want) return -1;
-    const low = texts.map((t) => clean(t).toLowerCase());
+    const low = texts.map((t) => fold(t));
     let i = low.indexOf(want);
     if (i >= 0) return i;
     const whole = wordRe(want);
@@ -1035,6 +1049,14 @@
       const focused = (root.activeElement || document.activeElement) === el;
       return { ok: focused, error: focused ? undefined : "couldn't focus that field", had: String(el.value || "").length };
     }
+    if (op === "pickafter") {   // after Enter in a search-and-pick box: the options it listed
+      const res = await K.pick({ value: a.value, quick: false });
+      if (!res.picked && promptLike(el)) {
+        const empty = /no (items|results|matches)/i.test(clean((el.closest("[data-automation-id]") || document.body).innerText).slice(0, 4000));
+        return { ok: true, took: true, combo: true, picked: null, options: res.options || [], none: empty };
+      }
+      return { ok: true, took: true, combo: true, picked: res.picked, options: res.options };
+    }
     if (op === "afterfill") {
       const want = String(a.value), now = String(el.value || "");
       const digits = (s) => s.replace(/\D/g, "");
@@ -1042,9 +1064,14 @@
         (digits(y).length >= 6 && digits(x) === digits(y));          // a phone mask reformats the digits
       const took = a.clear === false ? now.endsWith(want) || now.includes(want) : same(now, want);
       if (!took) return { ok: true, took: false, now: now.slice(0, 80) };
-      const combo = isCombo(el);
+      const combo = isCombo(el) || promptLike(el);
       if ((combo || placeLike(el)) && !a.secret && a.pick !== false && !isSearch(el)) {
-        const res = await K.pick({ value: a.value, quick: !combo });
+        const res = await K.pick({ value: a.value, quick: true });
+        if (!res.picked && !res.options && promptLike(el)) return { ok: true, took: true, combo: true, needs_enter: true };
+        if (!res.picked && !res.options && combo) {
+          const more = await K.pick({ value: a.value, quick: false });
+          return { ok: true, took: true, combo: true, picked: more.picked, options: more.options };
+        }
         if (combo || res.picked || res.options) return { ok: true, took: true, combo: true, picked: res.picked, options: res.options };
       }
       if (!a.keep_focus && !combo) el.blur();  // many forms validate a field when it loses focus
