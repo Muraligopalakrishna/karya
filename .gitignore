@@ -1,5 +1,7 @@
 # Your settings, keys and personal data - never commit these
 .env
+.env.*
+!.env.example
 data/
 workspace/
 *.pdf
