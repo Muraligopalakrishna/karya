@@ -52,6 +52,13 @@ def test_upload_never_clicks_a_send_or_submit_button(ext, logo):
     assert calls == []                      # nothing was asked of Chrome at all
 
 
+def test_an_unlabeled_submit_button_is_never_clicked_to_upload(ext, logo):
+    s, calls, _ = ext
+    s.items = {8: {"id": 8, "tag": "button", "type": "submit", "label": ""}}
+    out = s.upload(8, str(logo))
+    assert out.startswith("NOT UPLOADED") and "element 8" in out and calls == []
+
+
 def test_upload_button_may_open_the_page_picker(ext, logo):
     s, calls, answers = ext
     s.items = {2500: {"id": 2500, "tag": "div", "label": "upload Upload"}}

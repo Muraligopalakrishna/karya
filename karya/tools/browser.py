@@ -1103,8 +1103,8 @@ class BrowserSession(_Common):
             loc.set_input_files(str(path))
         else:
             label = (item or {}).get("label") or f"element {element_id}"
-            if item and item.get("label") and classify_click(item, item["label"], getattr(self.page, "url", "") or "") != SAFE:
-                return _not_an_upload_button(element_id, item["label"])
+            if item and classify_click(item, item.get("label") or "", getattr(self.page, "url", "") or "") != SAFE:
+                return _not_an_upload_button(element_id, item.get("label") or f"element {element_id}")
             if item and (item.get("disabled") or re.search(r"\bloading\b", label, re.I)):
                 return (f"NOT UPLOADED: \"{label}\" is still loading / disabled, so it can't open a file picker yet. "
                         "Wait a few seconds and snapshot again; if it stays like this, reload the page (browser_open the "
@@ -1576,8 +1576,8 @@ class ExtensionSession(_Common):
         element_id = int(element_id)
         item = self.items.get(element_id) or {}
         is_field = item.get("tag") == "input" and item.get("type") == "file"
-        if item.get("label") and not is_field and classify_click(item, item["label"], self.url) != SAFE:
-            return _not_an_upload_button(element_id, item["label"])
+        if item and not is_field and classify_click(item, item.get("label") or "", self.url) != SAFE:
+            return _not_an_upload_button(element_id, item.get("label") or f"element {element_id}")
         try:
             name = self._send_file(element_id, file_path, click=bool(item) and not is_field)
         except UserMustPick as exc:

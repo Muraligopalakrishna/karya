@@ -819,7 +819,7 @@
     box.update = (wa) => {
       const st = wa.state || "off";
       const text = {
-        off: wa.detail || "Not linked yet.",
+        off: wa.opened_before ? "WhatsApp is closed. Click Open WhatsApp when you want to give Karya tasks from your phone." : "Not linked yet.",
         starting: "Opening WhatsApp Web...",
         opening: "Opening your \"Message yourself\" chat...",
         needs_qr: "Scan the code in the WhatsApp window: on your phone open WhatsApp > Settings > Linked devices > Link a device.",
