@@ -1191,13 +1191,21 @@ def track_application(company: str, role: str, url: str = "", status: str = "app
 
 @tool("application_queue", "The jobs the user picked to apply to: status shows what's applied and what's next; skip marks a "
       "job you can't apply to (with the reason) and gives the next one; done marks a job the user says they applied "
-      "to themselves.", {
-    "action": P("string", "status, skip or done", enum=["status", "skip", "done"]),
+      "to themselves; pending puts a job back on the list when the user says it isn't done (e.g. 'Cisco isn't done').", {
+    "action": P("string", "status, skip, done or pending", enum=["status", "skip", "done", "pending"]),
     "job_id": P("string", "Job id, e.g. J4"),
     "reason": P("string", "Why it was skipped (shown to the user)"),
 }, group="jobs")
 def application_queue(action: str = "status", job_id: str = "", reason: str = ""):
     from .. import apply_queue
+    if action == "pending":
+        if not job_id:
+            return "ERROR: give job_id"
+        job = apply_queue.mark(job_id, "pending", reason or "back on the list (the user said it isn't done)")
+        if not job:
+            return f"ERROR: {job_id} isn't in the pick list. Call application_queue(action=\"status\")."
+        _forget_done_by_user(job)
+        return apply_queue.status_text()
     if action in ("skip", "done"):
         if not job_id:
             return "ERROR: give job_id"
@@ -1219,6 +1227,19 @@ def application_queue(action: str = "status", job_id: str = "", reason: str = ""
             track_application(job.get("company", ""), job.get("title", ""), job.get("url", ""), "applied",
                               method="you applied yourself")
     return apply_queue.status_text()
+
+
+def _forget_done_by_user(job: dict) -> None:
+    """The tracker's "you applied yourself" entry for this job goes (never a real, confirmed submission)."""
+    from ..memory import applications_store
+    data = applications_store.load()
+    apps = data.get("applications", [])
+    keep = [a for a in apps if not (a.get("method") == "you applied yourself" and (
+        (job.get("url") and a.get("url") == job.get("url")) or
+        (a.get("company") == job.get("company") and a.get("role") == job.get("title"))))]
+    if len(keep) != len(apps):
+        data["applications"] = keep
+        applications_store.save(data)
 
 
 # A field the form won't take, or an answer only the user can give that they didn't: a real reason to skip, even when

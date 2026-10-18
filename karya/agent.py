@@ -415,7 +415,7 @@ class Agent:
             await asyncio.to_thread(jobs_tools.track_application, job.get("company", ""), job.get("title", ""),
                                     job.get("url", ""), "applied", "you applied yourself")
             await emit({"type": "note", "text": f'Marked {job.get("company")} ({job.get("title")}) as applied by you, '
-                                                "so Karya won't apply to it. Say \"not done\" if that's wrong."})
+                                                f"so Karya won't apply to it. If that's wrong, say \"{job.get('company')} isn't done\"."})
         # Only a job request (or a short "continue" right after a job run) carries on with the picked jobs.
         # A bot has its own pick list (apply_queue.queue_file), so it carries on with its own picks, never the chat's.
         self._queue_task = bool(apply_queue.pending()) and apply_queue.wanted_in(user_words if self.bot else user_text)

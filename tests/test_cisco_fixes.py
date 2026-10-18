@@ -173,3 +173,15 @@ def test_whatsapp_only_to_numbers_the_user_gave(monkeypatch):
     assert browser._open_precheck({"url": "https://wa.me/919876543210"}).startswith("NOT OPENED")
     assert browser._compose_precheck({"platform": "whatsapp", "phone": "919800011111", "text": "hi"}) is None
     assert browser._compose_precheck({"platform": "whatsapp", "phone": "917000000000", "text": "hi"}) is None
+
+
+def test_a_job_marked_done_by_mistake_goes_back_on_the_list():
+    url = "https://cisco.wd5.myworkdayjobs.com/Cisco_Careers/job/Bangalore-India/Engineering-Product-Manager_2021911-1"
+    apply_queue.start([{"id": "J67", "title": "EPM", "company": "Cisco", "url": url}])
+    jobs.application_queue("done", "J67")
+    jobs.track_application("Acme", "PM", "https://acme.example/1", "applied", method="company site")
+    assert apply_queue.load()[0]["status"] == "applied"
+    jobs.application_queue("pending", "J67", "the user said Cisco isn't done")
+    assert apply_queue.load()[0]["status"] == "pending"
+    left = [(a.get("company"), a.get("method")) for a in jobs.list_applications()]
+    assert ("Cisco", "you applied yourself") not in left and ("Acme", "company site") in left   # real ones stay
