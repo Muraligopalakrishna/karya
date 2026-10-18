@@ -167,6 +167,9 @@ class Settings:
         self.mcp_tools = _env("KARYA_MCP_TOOLS", "")
         # Tasks from the user's phone: their WhatsApp "Message yourself" chat (see karya/whatsapp.py)
         self.whatsapp_enabled = _bool("WHATSAPP_ENABLED", False)
+        # ...and whether its window opens by itself when Karya starts (and again when it's closed). Off: only when the
+        # user opens it (Setup, the chat, or an AI app through MCP)
+        self.whatsapp_at_start = _bool("WHATSAPP_AT_START", False)
         # Keep the PC from sleeping while Karya runs, so bots work on time (the screen can still turn off)
         self.keep_awake = _bool("KARYA_KEEP_AWAKE", False)
         # Daily limits that protect the user's accounts from being flagged as spam (any AI, any mode)
@@ -258,7 +261,7 @@ EDITABLE_KEYS = tuple([k for p in PRESETS for k in (p.key_env, f"{p.name.upper()
                         "APPROVAL_MODE", "AUTO_SUBMIT_PICKED", "KEEP_GOING", "KEEP_GOING_MINUTES",
                         "KARYA_MCP_ENABLED", "KARYA_MCP_TOOLS", "KARYA_MAX_EMAILS_PER_DAY", "KARYA_MAX_POSTS_PER_DAY",
                         "KARYA_MAX_APPLICATIONS_PER_DAY", "KARYA_FULL_ACCESS", "KARYA_FULL_ACCESS_PAYMENTS",
-                        "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED",
+                        "KARYA_FULL_ACCESS_CAP", "KARYA_REUSE_LOGIN", "WHATSAPP_ENABLED", "WHATSAPP_AT_START",
                         "KIRO_LOGIN", "CODEX_ENABLED", "CODEX_MODEL", "CODEX_REASONING", "OLLAMA_MODEL",
                         "KARYA_KEEP_AWAKE", "CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_EFFORT",
                         "OLLAMA_ENABLED", "KARYA_ONBOARDED", "KARYA_START_MENU"])

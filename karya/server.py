@@ -923,6 +923,8 @@ def create_app(agent: Agent | None = None, token: str | None = None, port: int |
         link.attach(websocket, asyncio.get_running_loop(), {"version": str(hello.get("version", ""))[:20], "browser": browser})
         hub: Hub = app.state.hub
         await hub.send({"type": "browser_link", **link.status()})
+        if link.should_reload():   # Karya was updated: the extension reloads itself and reconnects as the new version
+            await websocket.send_json({"method": "reload", "params": {}})
         try:
             while True:
                 data = await websocket.receive_json()

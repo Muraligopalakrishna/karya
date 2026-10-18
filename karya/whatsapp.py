@@ -24,6 +24,8 @@ TAG = "[Karya]"              # plain text: WhatsApp Web draws emoji as images, w
 POLL_SECONDS = 2.5
 TITLE = "Karya WhatsApp - keep this window open"
 REOPEN_SECONDS = 5
+CLOSED_BY_USER = ("You closed Karya's WhatsApp window, so tasks from your phone are off until you open it again: "
+                  "Setup > Phone & bots > Open WhatsApp, or ask Karya to connect WhatsApp.")
 RETRY_SECONDS = 15           # no internet yet (right after Windows starts): try WhatsApp Web again this often
 
 READ_JS = r"""() => {
@@ -226,20 +228,28 @@ class WhatsAppBridge:
             with sync_playwright() as pw:
                 while not self._stop.is_set():
                     ctx = self._launch(pw)
+                    why = "closed"
                     try:
                         page = ctx.pages[0] if ctx.pages else ctx.new_page()
                         if self._open(page):
-                            self._loop(page)
+                            why = self._loop(page) or "closed"
                     finally:
                         try:
                             ctx.close()
                         except Exception:  # noqa: BLE001
                             pass
-                    if not self._stop.is_set():  # its window was closed: open it again (Disconnect turns it off)
-                        self.state = "starting"
-                        self.detail = ("Karya's WhatsApp window was closed, so Karya opened it again. Keep it open "
-                                       "(it can sit behind other windows).")
-                        self._stop.wait(REOPEN_SECONDS)
+                    if self._stop.is_set():
+                        break
+                    if why == "closed" and not settings.whatsapp_at_start:
+                        # The user closed it and wants WhatsApp only when they open it: it stays closed
+                        self._stop.set()
+                        self.state, self.detail = "off", CLOSED_BY_USER
+                        return
+                    # Karya closed a stuck window, or the user wants WhatsApp always open: open it again
+                    self.state = "starting"
+                    self.detail = ("Karya's WhatsApp window was closed, so Karya opened it again. Keep it open (it can "
+                                   "sit behind other windows), or turn off \"Open WhatsApp when Karya starts\".")
+                    self._stop.wait(REOPEN_SECONDS)
             self.state, self.detail = "off", ""
         except Exception as exc:  # noqa: BLE001 - reported in Karya's status, never crashes the server
             self.state, self.detail = "error", f"{type(exc).__name__}: {str(exc).splitlines()[0][:160]}"
@@ -298,7 +308,7 @@ class WhatsAppBridge:
         return changed
 
     def _loop(self, page) -> None:
-        """Returns when the window is closed (or Karya stops)."""
+        """Returns "closed" when the user closed the window, "stuck" when Karya gave up on it (None: Karya stops)."""
         state = _load_state()
         seen: deque = deque(state.get("seen") or [], maxlen=400)
         self._seen = seen
@@ -310,12 +320,12 @@ class WhatsAppBridge:
         while not self._stop.is_set():
             try:
                 if page.is_closed():
-                    return
+                    return "closed"
                 info = page.evaluate(READ_JS) or {}
                 failures = 0
             except Exception:  # noqa: BLE001 - the page is navigating, or the window was closed
                 if page.is_closed():
-                    return
+                    return "closed"
                 failures += 1
                 if failures >= 6:        # not just a page change: say so instead of "ready"
                     self.state, self.detail = "starting", "WhatsApp Web isn't answering; Karya is reloading it"
@@ -325,7 +335,7 @@ class WhatsAppBridge:
                     except Exception:  # noqa: BLE001
                         pass
                 if failures >= 80:       # still stuck: close it and open a new window
-                    return
+                    return "stuck"
                 self._stop.wait(POLL_SECONDS)
                 continue
             kind = info.get("state")

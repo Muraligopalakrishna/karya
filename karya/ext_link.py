@@ -50,6 +50,7 @@ class ExtensionLink:
         self._pending: dict[int, concurrent.futures.Future] = {}
         self._next = 0
         self._lock = threading.Lock()
+        self.reload_asked: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -60,6 +61,15 @@ class ExtensionLink:
         return {"connected": self.connected, "version": running, "latest": latest,
                 "needs_reload": bool(self.connected and latest and running and running != latest),
                 "browser": self.info.get("browser"), "since": int(self.connected_at) if self.connected else None}
+
+    def should_reload(self) -> bool:
+        """An older extension than the one in Karya's folder: ask it once to load the new files (no loop when the
+        user runs a copy from another folder: each version is asked only once per Karya run)."""
+        st = self.status()
+        if not st["needs_reload"] or st["version"] in self.reload_asked:
+            return False
+        self.reload_asked.add(st["version"])
+        return True
 
     # ---------------------------------------------------------------- called by the server (event loop thread)
     def attach(self, ws, loop: asyncio.AbstractEventLoop, info: dict) -> None:

@@ -121,7 +121,9 @@ For CLIs it's one command, for example `claude mcp add --scope user karya -- "C:
 
 Karya reads only that one chat, and passwords never go over WhatsApp. If nobody answers an approval within 30 minutes, Karya doesn't do it.
 
-Karya has to be running on your PC to read WhatsApp. Turn on **Start Karya when I sign in to Windows** (in the same tab, or tell Karya "start with Windows") and it starts by itself, minimized, every time you sign in. If you send a message while Karya is off, it does the task when it starts, as long as the message is less than 6 hours old.
+Karya reads WhatsApp only while it's running and its WhatsApp window is open. That window doesn't open by itself: click **Open WhatsApp** in Setup, or ask Karya (or your AI app, through MCP) to connect WhatsApp. Closing the window turns phone tasks off until you open it again.
+
+To take tasks from your phone all the time, turn on **Open WhatsApp when Karya starts** and **Start Karya when I sign in to Windows** (both in the same tab). Karya then starts minimized every time you sign in, with WhatsApp open. If you send a message while Karya is off, it does the task when it starts, as long as the message is less than 6 hours old.
 
 ### Bots
 

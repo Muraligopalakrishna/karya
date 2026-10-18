@@ -78,7 +78,13 @@ class PhoneChannel:
         return {"state": "off"}
 
     def status(self) -> dict:
-        return self.bridge.status() if self.bridge is not None else {"state": "off", "detail": ""}
+        state = self.bridge.status() if self.bridge is not None else {"state": "off", "detail": ""}
+        from .whatsapp import PROFILE
+        opened = bool(settings.whatsapp_enabled or PROFILE.exists())
+        if state.get("state") == "off" and not state.get("detail") and opened:
+            state = {**state, "detail": "WhatsApp is closed. Open it in Setup > Phone & bots (Open WhatsApp), or ask "
+                                        "Karya to connect WhatsApp."}
+        return {**state, "at_start": settings.whatsapp_at_start, "opened_before": opened}
 
     def say(self, text: str) -> None:
         if self.bridge is not None and self.bridge.state != "off" and str(text or "").strip():
@@ -90,6 +96,8 @@ class PhoneChannel:
 
     # ----- Karya -> phone (hub listener: bots always, the chat's own run only for tasks from the phone)
     def _routed(self, request: dict) -> bool:
+        if self.bridge is None or getattr(self.bridge, "state", "off") in ("off", "error", "needs_qr"):
+            return False   # WhatsApp is closed (or not linked): approvals and questions stay in Karya's window
         if request.get("bot"):
             return True
         return str(request.get("source") or getattr(self.hub, "source", "chat")) != "chat"
@@ -307,7 +315,8 @@ def _need_channel() -> str | None:
 @tool("connect_whatsapp", "Link the user's WhatsApp so they can give Karya tasks from their phone: they write in their "
       "own 'Message yourself' chat; Karya replies there, asks there for approvals and sends background agents' "
       "reports there (bots' too). Opens WhatsApp Web in a window of its own; the first time, the user scans the code with "
-      "WhatsApp > Linked devices > Link a device. Only that one chat is ever read.", group="agents")
+      "WhatsApp > Linked devices > Link a device. Only that one chat is ever read. Also use it to open WhatsApp again "
+      "when the user asks (it doesn't open by itself unless they turned that on).", group="agents")
 def connect_whatsapp():
     problem = _need_channel()
     if problem:
@@ -335,10 +344,11 @@ def disconnect_whatsapp():
 
 
 def start(hub, loop) -> "PhoneChannel":
-    """Called by the server at start: the channel exists from then on; WhatsApp opens if the user linked it before."""
+    """Called by the server at start: the channel exists from then on. WhatsApp opens by itself only when the user
+    linked it before AND turned on "Open WhatsApp when Karya starts"; otherwise it opens when they ask for it."""
     global CHANNEL
     CHANNEL = PhoneChannel(hub, loop)
-    if settings.whatsapp_enabled and owner_number():
+    if settings.whatsapp_enabled and settings.whatsapp_at_start and owner_number():
         import threading
         threading.Thread(target=CHANNEL.enable, kwargs={"wait": 0}, daemon=True, name="karya-whatsapp-start").start()
     return CHANNEL

@@ -263,6 +263,41 @@ function dragSteps(x1, y1, x2, y2, n = 12) {
   return steps;
 }
 
+// Upload through the file picker an Upload button opens. Chrome hands the picker to Karya instead of showing the
+// Open dialog (nothing pops up on the screen), and Karya puts the file in, as if the user had chosen it.
+async function uploadByPicker(tabId, id, path) {
+  const plan = await inFrame(tabId, 0, (o, a) => window.__karya.plan(o, a), ["click_at", { id, x: 0.5, y: 0.5 }]);
+  if (!plan || plan.ok === false) return plan || { ok: false, error: "the upload button is gone. Take a new browser_snapshot." };
+  const [x, y] = plan.points[0];
+  let listener = null;
+  await debuggerOn(tabId);
+  try {
+    const opened = new Promise((resolve) => {
+      listener = (source, method, params) => {
+        if (source.tabId === tabId && method === "Page.fileChooserOpened") resolve(params || {});
+      };
+      chrome.debugger.onEvent.addListener(listener);
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Page.enable");
+    // Before the click: if Chrome won't hand the picker over, nothing is clicked (no Open dialog on the screen)
+    await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: true });
+    for (const step of clickSteps(x, y)) await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", step);
+    const chooser = await Promise.race([opened, sleep(6000).then(() => null)]);
+    if (!chooser) return { ok: false, no_picker: true, target: plan.target, error: `clicking "${plan.target}" didn't open a file picker` };
+    if (!chooser.backendNodeId) {
+      // Chrome's newer file picker (showOpenFilePicker): it has no file field that an extension can fill
+      return { ok: false, user_needed: true, target: plan.target,
+               error: `"${plan.target}" opens Chrome's newer file picker, which Karya can't fill in` };
+    }
+    await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", { files: [path], backendNodeId: chooser.backendNodeId });
+    return { ok: true, native: true, picker: true, target: plan.target };
+  } finally {
+    if (listener) chrome.debugger.onEvent.removeListener(listener);
+    await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => null);
+    debuggerIdle();
+  }
+}
+
 // Returns the result, or null to use the simulated events instead.
 async function realMouseAct(tabId, op, args) {
   const plan = await inFrame(tabId, 0, (o, a) => window.__karya.plan(o, a), [op, args]);
@@ -306,6 +341,9 @@ async function realMouseAct(tabId, op, args) {
 // ------------------------------------------------------------------ operations Karya asks for
 const ops = {
   async ping() { return { pong: true, version: VERSION }; },
+  // Karya asks for this when it finds an older version running than the one in its folder: Chrome loads the new
+  // files and the link reconnects by itself, so nobody has to press Reload in chrome://extensions.
+  async reload() { setTimeout(() => chrome.runtime.reload(), 300); return { ok: true, version: VERSION }; },
 
   async open({ url, new_tab }) {
     let tabId = await currentTab();
@@ -387,12 +425,25 @@ const ops = {
     return res;
   },
 
-  async upload_native({ frame = 0, id, path }) {
+  async upload_native({ frame = 0, id, path, click = false }) {
     // Put a file from this PC into the page's file input the way Chrome does when a person picks it: a trusted
     // change event. Sites like Instagram ignore files set from page script (2026-10-07: the reel never loaded).
     if (!chrome.debugger || frame !== 0) return { ok: false, error: "native upload unavailable here" };
     const tabId = await requireTab();
-    const marked = await inFrame(tabId, 0, (o, a) => window.__karya.act(o, a), ["upload", { id, mark: true }]);
+    const mark = (near) => inFrame(tabId, 0, (o, a) => window.__karya.act(o, a), ["upload", { id, mark: true, near }]);
+    let marked = await mark(true);
+    let clicked = null;
+    if (marked && marked.no_input && click) {
+      // No file field at the button: apps like Google Flow make one only when their Upload button is clicked
+      // (2026-10-18). Click it the way a person does and take the file picker it opens.
+      const picked = await uploadByPicker(tabId, id, path);
+      if (picked.ok || !picked.no_picker) return picked;
+      clicked = picked.target || "the button";
+    }
+    if (marked && marked.no_input) marked = await mark(false);   // any file field on the page
+    if (marked && marked.no_input && clicked) {
+      marked.error = `clicking "${clicked}" didn't open a file picker, and the page has no file field`;
+    }
     if (!marked || marked.ok === false) return marked || { ok: false, error: "no file field" };
     await debuggerOn(tabId);
     try {

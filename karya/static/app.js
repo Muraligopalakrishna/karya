@@ -793,6 +793,19 @@
       try { box.update(await api("/api/phone", { action: "disconnect" })); loadStatus(); } catch (e) { msg.textContent = "\u2716 " + e.message; }
     }, "ghost small", "Disconnect WhatsApp");
     const row = el("div", "phone-row"); row.append(num, go, off);
+    // WhatsApp opens by itself only when the user wants that; otherwise only when they open it
+    const atStart = el("label", "toggle-row");
+    const atStartBox = el("input"); atStartBox.type = "checkbox"; atStartBox.setAttribute("aria-label", "Open WhatsApp when Karya starts");
+    atStart.append(atStartBox, " Open WhatsApp when Karya starts, and again if its window closes. When this is off, WhatsApp opens only when you click Open WhatsApp, or ask Karya or your AI app to connect WhatsApp");
+    let savingAtStart = false;
+    atStartBox.addEventListener("change", async () => {
+      savingAtStart = true;
+      try {
+        await api("/api/settings", { WHATSAPP_AT_START: atStartBox.checked ? "true" : "false" });
+        msg.textContent = atStartBox.checked ? "WhatsApp now opens by itself when Karya starts." : "WhatsApp now opens only when you open it.";
+      } catch (e) { msg.textContent = "\u2716 " + e.message; atStartBox.checked = !atStartBox.checked; }
+      savingAtStart = false;
+    });
     const auto = el("label", "toggle-row");
     const autoBox = el("input"); autoBox.type = "checkbox"; autoBox.setAttribute("aria-label", "Start Karya when I sign in to Windows");
     auto.append(autoBox, " Start Karya when I sign in to Windows, so WhatsApp tasks and bots work without opening Karya (it waits minimized in the taskbar)");
@@ -806,7 +819,7 @@
     box.update = (wa) => {
       const st = wa.state || "off";
       const text = {
-        off: "Not linked yet.",
+        off: wa.detail || "Not linked yet.",
         starting: "Opening WhatsApp Web...",
         opening: "Opening your \"Message yourself\" chat...",
         needs_qr: "Scan the code in the WhatsApp window: on your phone open WhatsApp > Settings > Linked devices > Link a device.",
@@ -814,11 +827,13 @@
         error: "\u2716 " + (wa.detail || "WhatsApp didn't start."),
       }[st] || wa.detail || st;
       state.textContent = text; state.className = "phone-state " + (st === "ready" ? "ok" : st === "error" ? "missing" : "");
-      num.hidden = !(st === "off" || st === "error"); go.hidden = !(st === "off" || st === "error"); off.hidden = st === "off";
+      num.hidden = !(st === "off" || st === "error") || !!wa.opened_before; go.hidden = !(st === "off" || st === "error"); off.hidden = st === "off";
+      go.textContent = wa.opened_before ? "Open WhatsApp" : "Connect WhatsApp"; go.setAttribute("aria-label", go.textContent);
+      if (!savingAtStart && "at_start" in wa) atStartBox.checked = !!wa.at_start;
     };
     box.append(el("h3", "", "Tasks from your phone (WhatsApp)"),
-      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat). Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that chat is read, and passwords never go over WhatsApp. Karya must be running on this PC, so turn on \"Start Karya when I sign in to Windows\" below."),
-      state, row, auto, msg);
+      el("p", "hint", "Message yourself on WhatsApp (your own \"Message yourself\" chat). Karya does the task, asks you there before it sends, posts or submits, and reports back. Only that chat is read, and passwords never go over WhatsApp. Karya reads WhatsApp only while its WhatsApp window is open. To take tasks from your phone after a restart, turn on both options below."),
+      state, row, atStart, auto, msg);
     box.update({ state: "off" });
     onStatus((s) => { box.update(s.whatsapp || {}); box.setAutostart(s.autostart); });
     return box;

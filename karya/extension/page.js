@@ -789,7 +789,7 @@
     return false;
   }
 
-  function fileInputNear(el) {
+  function fileInputNear(el, anywhere = true) {
     if (el && isFile(el)) return el;
     let node = el;
     for (let d = 0; node && d < 8; d++, node = parentOf(node)) {
@@ -797,7 +797,7 @@
                                            (node.shadowRoot && deepOne("input[type=file]", node.shadowRoot)));
       if (found) return found;
     }
-    return deepOne("input[type=file]");
+    return anywhere ? deepOne("input[type=file]") : null;
   }
 
   // ---------------------------------------------------------------- posts on a social feed (read only)
@@ -1103,8 +1103,8 @@
       return { ok: true };
     }
     if (op === "upload") {
-      const input = fileInputNear(el);
-      if (!input) return { ok: false, error: "there is no file upload field on this page" };
+      const input = fileInputNear(el, !a.near);
+      if (!input) return { ok: false, no_input: true, error: "there is no file upload field on this page" };
       if (a.mark) {           // Chrome itself will put the file in (a trusted change, like a person choosing it)
         deepAll("[data-karya-upload]").forEach((e) => e.removeAttribute("data-karya-upload"));
         input.setAttribute("data-karya-upload", "1");

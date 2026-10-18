@@ -1103,6 +1103,8 @@ class BrowserSession(_Common):
             loc.set_input_files(str(path))
         else:
             label = (item or {}).get("label") or f"element {element_id}"
+            if item and item.get("label") and classify_click(item, item["label"], getattr(self.page, "url", "") or "") != SAFE:
+                return _not_an_upload_button(element_id, item["label"])
             if item and (item.get("disabled") or re.search(r"\bloading\b", label, re.I)):
                 return (f"NOT UPLOADED: \"{label}\" is still loading / disabled, so it can't open a file picker yet. "
                         "Wait a few seconds and snapshot again; if it stays like this, reload the page (browser_open the "
@@ -1548,15 +1550,20 @@ class ExtensionSession(_Common):
         self._act(int(element_id), "check", checked=bool(checked))
         return f"Set [{element_id}] to {'checked' if checked else 'unchecked'}."
 
-    def _send_file(self, element_id: int, file_path: str) -> str:
+    def _send_file(self, element_id: int, file_path: str, click: bool = False) -> str:
+        """click: the element is an upload button that may be clicked to open the page's own file picker."""
         path = Path(file_path)
         if not path.is_file():
             raise FileNotFoundError(f"File not found: {path}")
         try:   # Chrome itself puts the file in: a trusted change, like a person choosing it (Instagram needs this)
             res = self._req("upload_native", timeout=60, frame=self.frames.get(element_id, 0), id=int(element_id),
-                            path=str(path.resolve()))
+                            path=str(path.resolve()), click=bool(click))
             if isinstance(res, dict) and res.get("ok"):
                 return path.name
+            if isinstance(res, dict) and res.get("user_needed"):  # a picker only the user can answer
+                raise UserMustPick(res.get("error") or "this site's file picker can't be filled in by Karya")
+            if isinstance(res, dict) and res.get("no_input"):   # no field, and no picker opened: nothing else to try
+                raise NoFileField(res.get("error") or "there is no file upload field on this page")
         except RuntimeError:   # an older extension or no debugger: the page-script way below
             pass
         if path.stat().st_size > self.MAX_UPLOAD:
@@ -1566,7 +1573,20 @@ class ExtensionSession(_Common):
         return path.name
 
     def upload(self, element_id, file_path):
-        name = self._send_file(int(element_id), file_path)
+        element_id = int(element_id)
+        item = self.items.get(element_id) or {}
+        is_field = item.get("tag") == "input" and item.get("type") == "file"
+        if item.get("label") and not is_field and classify_click(item, item["label"], self.url) != SAFE:
+            return _not_an_upload_button(element_id, item["label"])
+        try:
+            name = self._send_file(element_id, file_path, click=bool(item) and not is_field)
+        except UserMustPick as exc:
+            return (f"NOT UPLOADED: {exc}. Don't try again: tell the user to click that button and choose "
+                    f"{Path(file_path).name} themselves (or drag the file onto the page), then carry on.")
+        except LookupError as exc:
+            if not _NO_FILE_FIELD.search(str(exc)):
+                raise
+            return _no_upload_field(str(exc))
         self._settle(800)
         return f"Uploaded {name}.\n" + self._snapshot(max_items=70, text_chars=800)
 
@@ -2439,6 +2459,28 @@ def browser_upload(element_id: int, file_path: str, any_resume: bool = False):
     if isinstance(result, str) and result.startswith("Uploaded "):
         ATTACHED.setdefault(_site(_current().url), set()).add(Path(file_path).name.lower())
     return result
+
+
+class NoFileField(LookupError):
+    """The page has no file field for an upload, and clicking the button opened no file picker."""
+
+
+class UserMustPick(LookupError):
+    """The upload button opens a file picker that only the user can answer (Chrome's newer picker)."""
+
+
+_NO_FILE_FIELD = re.compile(r"no file (upload )?field|file picker", re.I)
+
+
+def _not_an_upload_button(element_id, label: str) -> str:
+    return (f"NOT UPLOADED: [{element_id}] \"{str(label)[:70]}\" isn't an upload button, and clicking it could send, "
+            "post or submit something. Use the page's own upload / attach / choose-file button.")
+
+
+def _no_upload_field(problem: str) -> str:
+    return (f"NOT UPLOADED: {problem}. Open the site's upload menu or dialog first, then browser_upload on ITS upload / "
+            "'from computer' button: Karya clicks it and puts the file into the file picker it opens. If that fails "
+            "twice, tell the user instead of trying again.")
 
 
 # The page still shows its "pick a file" step after an upload: the file didn't go in (Instagram ignored it, 2026-10-07)

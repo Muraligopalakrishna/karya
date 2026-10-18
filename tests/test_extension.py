@@ -575,6 +575,8 @@ def test_ext_endpoint_accepts_only_the_extension(live_server):
                 await asyncio.sleep(0.05)
             assert ext_link.link.connected and ext_link.link.status()["browser"] == "Chrome"
             assert ext_link.link.status()["needs_reload"] is True                     # Setup says an update is ready
+            first = json.loads(await asyncio.wait_for(ws.recv(), 5))
+            assert first == {"method": "reload", "params": {}}                        # ...and the extension reloads itself
             # a tool thread asks the extension something; the fake extension answers
             answer = asyncio.get_running_loop().run_in_executor(None, ext_link.link.request, "ping", {}, 5)
             msg = json.loads(await asyncio.wait_for(ws.recv(), 5))
