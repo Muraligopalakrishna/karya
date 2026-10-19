@@ -142,6 +142,10 @@ class Hub:
                     scheduler.forget_files(record["id"])
                 await self.send({"type": "bot_done", "run": run.id, "bot": run.bot, "agent_id": record["id"],
                                  "task": task_now[:300], "report": report, "ok": ok})
+                if ok and report:   # the chat knows the report, and "apply for 4" means #4 in it
+                    from . import job_lists
+                    job_lists.record(job_lists.from_report(report), f"{run.bot}'s report")
+                    self.agent.bot_report(run.bot, report)
                 await self._tell("on_bot_done", record, task_now, report, item["source"])
                 await self._next_bot()
         entry["future"] = asyncio.create_task(runner())

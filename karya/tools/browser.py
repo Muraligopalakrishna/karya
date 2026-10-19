@@ -1132,6 +1132,40 @@ class BrowserSession(_Common):
         self._settle(800)
         return f"Uploaded {path.name}.\n" + self._snapshot(max_items=70, text_chars=800)
 
+    def add_tags(self, element_id, entries, label=None):
+        self._ensure()
+        _, item = self._locator(element_id, label)
+        field = (item or {}).get("label") or label or ""
+        eid = (item or {}).get("id", element_id)
+        added = []
+        for n, entry in enumerate(entries):
+            if n:
+                self._snapshot(max_items=150, text_chars=300)
+                again = self.find_item(None, field) if field else None
+                if again:
+                    eid = again["id"]
+            result = self.type_text(eid, entry, True, False, None)
+            loc, _ = self._locator(eid, None)
+            if "picked" not in str(result):
+                for kind in ("keydown", "keypress", "keyup"):   # a script Enter: tag boxes react, forms don't submit
+                    try:
+                        loc.dispatch_event(kind, {"key": "Enter", "code": "Enter", "bubbles": True, "cancelable": True})
+                    except Exception:  # noqa: BLE001 - the box was drawn again
+                        break
+            self.page.wait_for_timeout(400)
+            if n == 0:
+                try:
+                    left = loc.input_value(timeout=1500).strip()
+                except Exception:  # noqa: BLE001
+                    left = ""
+                if left and left.lower() == entry.lower():
+                    whole = ", ".join(entries)
+                    self.type_text(eid, whole, True, False, None)
+                    return f"Typed {len(whole)} chars into \"{field}\" (this box takes the whole list as one text)."
+            added.append(entry)
+        return (f"Added {len(added)} entries to \"{field}\", one at a time: {', '.join(added)}.\n"
+                + self._snapshot(max_items=80, text_chars=1000))
+
     def _file_input_for(self, path: Path):
         """The page's file input that accepts this kind of file (hidden ones too), without waiting for one."""
         kind = (mimetypes.guess_type(path.name)[0] or "").split("/")[0]
@@ -1571,6 +1605,38 @@ class ExtensionSession(_Common):
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self._act(element_id, "upload", b64=base64.b64encode(path.read_bytes()).decode("ascii"), name=path.name, mime=mime)
         return path.name
+
+    def add_tags(self, element_id, entries, label=None):
+        """A skills/tags box that takes one entry at a time: type it, then pick the site's suggestion or press an
+        Enter that can't submit the form. A plain text box (the text stays after Enter) gets the whole list once."""
+        eid = self._resolve(element_id, label)
+        field = (self.items.get(eid) or {}).get("label") or label or ""
+        added = []
+        for n, entry in enumerate(entries):
+            if n:   # the box is often drawn again after each entry: find it by its question
+                self._snapshot(max_items=150, text_chars=300)
+                again = self.find_item(None, field) if field else None
+                if again:
+                    eid = again["id"]
+            res = self._native_type(eid, entry, True, True) or self._act(eid, "set", value=entry, clear=True, pick=True)
+            if not res.get("picked"):
+                try:
+                    self._act(eid, "press", key="Enter", nosubmit=True)
+                except LookupError:
+                    pass
+            self._settle(400)
+            if n == 0:
+                try:
+                    left = str(self._act(eid, "value").get("value") or "").strip()
+                except LookupError:
+                    left = ""            # the box was drawn again: the entry became a tag
+                if left and left.lower() == entry.lower():
+                    whole = ", ".join(entries)
+                    self._native_type(eid, whole, True, False) or self._act(eid, "set", value=whole, clear=True, pick=False)
+                    return f"Typed {len(whole)} chars into \"{field}\" (this box takes the whole list as one text)."
+            added.append(entry)
+        return (f"Added {len(added)} entries to \"{field}\", one at a time: {', '.join(added)}.\n"
+                + self._snapshot(max_items=80, text_chars=1000))
 
     def upload(self, element_id, file_path):
         element_id = int(element_id)
@@ -2012,12 +2078,64 @@ def _not_picked(url: str) -> str | None:
             "(pass its id; it comes pre-ticked) so it's on their list, then submit.")
 
 
+# A box for skills or tags (one entry each): Instahyre's "Add skills" took a comma list as ONE skill (2026-10-19)
+_TAG_FIELD = re.compile(r"\bskills?\b|\btags?\b|\bkeywords?\b|\btechnolog|\bexpertise\b|\btools?\b", re.I)
+_SKILL_FIELD = re.compile(r"\bskills?\b|\bexpertise\b|\btechnolog|\btech stack\b|\btools? you\b", re.I)
+
+
+def tag_entries(item: dict | None, text) -> list[str]:
+    """The separate entries for a skills/tags box (2 or more), or [] when this isn't one."""
+    if not item or item.get("tag") != "input" or (item.get("type") or "text") not in ("text", "search", "") or \
+            not _TAG_FIELD.search(item.get("label") or ""):
+        return []
+    entries = [e.strip(" .") for e in re.split(r"\s*[,;\n]\s*", str(text or "")) if e.strip(" .")]
+    return entries if len(entries) >= 2 and all(len(e) <= 50 and len(e.split()) <= 6 for e in entries) else []
+
+
+def _skill_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9+#]+", " ", str(text or "").lower()).strip()
+
+
+def skills_problem(item: dict | None, text) -> str | None:
+    """Skills the user doesn't have (not in their resume, not confirmed by them): Karya never adds those. 2026-10-19:
+    Karya filled Instahyre's skills with its suggestions (Agile, Scrum, SQL) when the user's own wouldn't go in."""
+    if not item or item.get("tag") != "input" or not _SKILL_FIELD.search(item.get("label") or ""):
+        return None
+    entries = tag_entries(item, text) or [str(text or "").strip()]
+    if len(entries) == 1 and _TAG_FIELD.search(item.get("label") or "") and \
+            (len(entries[0]) > 40 or len(entries[0].split()) > 4) and not re.search(r"[.!?]", entries[0]):
+        return ("NOT TYPED: that looks like several skills in one entry (sites limit each to about 50 characters). Give "
+                "them as a comma list, e.g. \"Product Strategy, User Research\": Karya adds them one at a time.")
+    entries = [e for e in entries if e and len(e.split()) <= 6]
+    if not entries:
+        return None
+    from .resume import load_master
+    from .. import answers
+    master = load_master() or {}
+    if not master:
+        return None                                   # no resume to check against
+    known = _skill_key(json.dumps(master, ensure_ascii=False)) + " " + _skill_key(" ".join(answers.RECENT_USER[-6:]))
+    for q, a in answers.saved_answers().items():      # skills the user confirmed when Karya asked
+        if re.match(r"\s*(yes|y|yeah|yep|i do|i have)\b", str(a), re.I):
+            known += " " + _skill_key(q)
+    missing = [e for e in entries if f" {_skill_key(e)} " not in f" {known} "]
+    if not missing:
+        return None
+    own = ", ".join(str(s) for s in (master.get("skills") or [])[:25])
+    return (f"NOT TYPED: {', '.join(missing)} {'is' if len(missing) == 1 else 'are'}n't in the user's resume, and Karya "
+            "never adds a skill the user hasn't confirmed (not even the site's suggestions). The user's skills: "
+            f"{own}. Type only those, or ask the user with ask_user whether they have the others.")
+
+
 def _type_precheck(args) -> str | None:
     backend = _current()
     target = backend.find_item(args.get("element_id"), args.get("label") if args.get("element_id") is None else None)
     problem = answer_problem(target, args.get("text"))
     if problem:
         return _needs_answers([problem], "NOT TYPED")
+    problem = skills_problem(target, args.get("text"))
+    if problem:
+        return problem
     if _is_editor(target):
         first = _media_first(backend.url, "NOT TYPED")
         if first:
@@ -2401,6 +2519,9 @@ _OPENS_FORM = re.compile(r"^\W*(easy )?apply\b|\bapply (now|for|to|on|here)\b|^\
 def browser_type(text: str, element_id: int | None = None, clear: bool = True, submit: bool = False, label: str | None = None):
     backend = _current()
     target = backend.find_item(element_id, label if element_id is None else None)
+    entries = tag_entries(target, text) if not submit else []
+    if entries:          # a skills/tags box: one entry at a time, never one long "skill"
+        return _run("add_tags", element_id, entries, label)
     result = _run("type_text", element_id, text, clear, submit, label)
     if isinstance(result, str) and result.startswith("Typed"):
         _note_composed(backend.url, target, text, replace=clear)

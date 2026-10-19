@@ -564,6 +564,13 @@ def picked_only(args) -> str | None:
             return None
     except OSError:
         pass
+    last = answers.RECENT_USER[-1] if answers.RECENT_USER else ""
+    if re.search(r"\d", last):
+        # They named a job by number: never point at another one. 2026-10-19: "apply for 4" was read as J4, and
+        # "next: J67 at Cisco" sent Karya to a job the user had already applied to themselves
+        return (f"NOT RUN: {job_id} isn't a job the user picked or was shown. Don't guess which job they mean and don't "
+                "switch to another one: if a number in their message refers to a list (a bot's report, an earlier "
+                "answer), use that job's link; if it's still unclear, ask them with ask_user which job they mean.")
     nxt = left[0]
     return (f"NOT RUN: {job_id} isn't one of the jobs the user picked. Work only on their picks; next: "
             f'{nxt["id"]} "{nxt["title"]}" at {nxt["company"]} ({nxt["url"]}). application_queue shows the list.')

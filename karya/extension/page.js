@@ -566,10 +566,19 @@
   }
   const OPTION_SEL = '[role="option"], [role="listbox"] li, .pac-item, [data-option-index], .dropdown-location, ' +
     '[data-automation-id="promptOption"], [data-automation-id*="promptLeafNode" i], ' +
-    '[class*="dropdown-results" i] > *, [class*="autocomplete" i] li, [class*="suggestion" i] li, [class*="suggestions" i] > div';
-  const optionNodes = () => deepAll(OPTION_SEL)
-    .filter((o) => shown(o) && clean(o.innerText) && clean(o.innerText).length <= 120 &&
-      (!o.querySelector("input,select,textarea") || /promptOption|promptLeaf/i.test(o.getAttribute("data-automation-id") || "")));
+    '[class*="dropdown-results" i] > *, [class*="autocomplete" i] li, [class*="suggestion" i] li, [class*="suggestions" i] > div, ' +
+    // dropdown libraries whose options carry no role (2026-10-19: Instahyre's role and joining-time lists)
+    '.ng-option, .ui-select-choices-row, .select2-results__option, .chosen-results li, .multiselect__option, ' +
+    '.vs__dropdown-option, .mat-option, .mat-mdc-option, .ant-select-item-option, .el-select-dropdown__item, ' +
+    '.dropdown-menu > li, .dropdown-menu > a, .dropdown-item, [class*="dropdown" i] [class*="option" i], ' +
+    '[class*="dropdown" i] [class*="item" i], [class*="select" i] [class*="option" i], [class*="menu" i] [class*="option" i]';
+  const optionNodes = () => {
+    const found = deepAll(OPTION_SEL)
+      .filter((o) => shown(o) && clean(o.innerText) && clean(o.innerText).length <= 120 &&
+        (!o.querySelector("input,select,textarea") || /promptOption|promptLeaf/i.test(o.getAttribute("data-automation-id") || "")));
+    // a list box that matched as well as its options: keep the options (the innermost matches)
+    return found.filter((o) => !found.some((p) => p !== o && o.contains(p)));
+  };
   // The option that really is what was asked for: exact, starts with it as whole words ("Hyderabad" ->
   // "Hyderabad, Telangana, India"), or contains every typed word ("Hyderabad, India" -> "Hyderabad, Telangana, India").
   // "India" never picks "Indianapolis" or some Indian city: no good match -> null, and Karya shows the list instead.
@@ -734,7 +743,7 @@
     return await selectOption(el, String(a.option));
   };
 
-  function press(el, key) {
+  function press(el, key, nosubmit = false) {
     const target = el || document.activeElement || document.body;
     const parts = String(key).split("+");
     const name = parts.pop();
@@ -746,7 +755,8 @@
     const notCancelled = target.dispatchEvent(new KeyboardEvent("keydown", o));
     target.dispatchEvent(new KeyboardEvent("keypress", o));
     target.dispatchEvent(new KeyboardEvent("keyup", o));
-    if (name === "Enter" && notCancelled && target.tagName === "INPUT" && target.form) {  // like a real Enter key
+    // like a real Enter key; nosubmit: adding a skill/tag never submits the form around it
+    if (name === "Enter" && notCancelled && !nosubmit && target.tagName === "INPUT" && target.form) {
       try {
         if (target.form.requestSubmit) target.form.requestSubmit(); else target.form.submit();
       } catch (e) {  // e.g. the page's own pattern="" is invalid in this Chrome version
@@ -1118,7 +1128,8 @@
       input.dispatchEvent(new Event("change", { bubbles: true }));
       return { ok: true, name: a.name };
     }
-    if (op === "press") return press(el, a.key || "Enter");
+    if (op === "press") return press(el, a.key || "Enter", !!a.nosubmit);
+    if (op === "value") return { ok: true, value: "value" in el ? String(el.value || "") : clean(el.textContent) };
     if (op === "scroll") {
       if (a.direction === "top") window.scrollTo(0, 0);
       else if (a.direction === "bottom") window.scrollTo(0, document.body.scrollHeight);

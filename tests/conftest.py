@@ -51,6 +51,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(funding, "_LAST", {"time": 0.0, "by_name": {}})
     from karya import apply_queue
     monkeypatch.setattr(apply_queue, "QUEUE_FILE", tmp_path / "cache" / "apply_queue.json")
+    from karya import job_lists
+    monkeypatch.setattr(job_lists, "FILE", tmp_path / "cache" / "shown_jobs.json")
     from karya import focus, outbox
     monkeypatch.setattr(outbox, "OUTBOX_FILE", tmp_path / "outbox.json")
     monkeypatch.setattr(outbox, "SEEN_FILE", tmp_path / "cache" / "seen_emails.json")

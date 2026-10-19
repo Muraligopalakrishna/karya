@@ -18,6 +18,9 @@ class MainAgent:
     def __init__(self):
         self.busy, self.cancelled, self.seen, self.auto_mode = False, False, [], False
 
+    def bot_report(self, bot, report):
+        self.reports = getattr(self, "reports", []) + [(bot, report)]
+
     async def run(self, text, emit, confirm, ask, user_words=None):
         self.busy = True
         self.seen.append(text)

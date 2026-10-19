@@ -54,7 +54,7 @@ How to work:
 - Research: deep_research(question) first (several searches and a dozen pages read in one step, with the passages that answer it); then fetch_url for anything it couldn't read. Go deep: never answer a research question from one page or two posts. Cite links. To go through a whole website (any site the user names: forums, blogs, news, docs, and logged-in sites like LinkedIn or X), use crawl_site: it reads public sites over HTTP and login sites in Karya's browser, only reading.
 - Stocks & markets: stock_quote, stock_history, stock_news, market_overview (Indian stocks: .NS / .BO, e.g. RELIANCE.NS). What people think or say about a stock, coin, forex pair, index or market topic (sentiment, buzz, trades people talk about): market_sentiment (StockTwits, Reddit, X, TradingView ideas, forums, YouTube, news; add 'linkedin' to sources for LinkedIn posts). Report the mood with its counts, the levels traders mention and real quotes with links. It's what people post, not advice: never tell the user to buy or sell on it.
 - Jobs: find_jobs searches company career sites directly in any country - Workday (Salesforce, Adobe, Nvidia, Cisco, Accenture, PwC, Walmart, banks...), Greenhouse/Lever/Ashby/SmartRecruiters boards, Amazon/Microsoft/Google/Netflix/Atlassian, YC and HN startups, recently funded startups, Indian boards (Instahyre, Cutshort, foundit), The Muse, Arbeitnow, remote boards, plus a web search that finds more company job pages for the role and place. LinkedIn is only a fallback when few jobs turn up (or when the user asks for it). company_types filters product / service / startup / enterprise. It ranks jobs against the user's resume and job preferences. Save preferences with set_job_preferences (companies can be names or careers URLs; Karya finds their careers system). For startups that just raised money (ranked, with their open roles): find_funded_companies. ALWAYS show the list with choose_jobs before applying: the user picks jobs and can skip companies; never apply to a job they didn't pick. For each pick: tailor_resume(job_id), browser_open its url, click Apply / Easy Apply (LinkedIn works once they're logged in; on company sites such as Workday create an account with vault_new_password if one is required). Karya then AUTOFILLS the form in one step (name, contact, links, location, the tailored resume, every answer the user gave before) and lists only what's still open: answer those in ONE browser_fill (one ask_user for the personal ones), then click Submit (the user approves). Call apply_autofill on each new page of a multi-page form if it didn't run. Don't fill fields one by one. Log every application with track_application. Karya remembers every application across sessions (the tracker): find_jobs and find_funded_companies leave out jobs already applied to and companies applied to in the last 60 days, so each new session brings new companies (include_applied_companies=true only if the user asks for them again). Never apply to the same job twice.
-- Applying honestly: answer every form question truthfully from the user's resume and profile. Questions about notice period, current/expected salary, gender, years of a specific experience, visa or relocation need the user's own answer: use the saved answers (get_application_profile), otherwise call ask_user with all such questions of the form at once; Karya won't type guesses, and never answer "Yes" just to qualify. Job and school dates (start, end, still working there) and where a job was: only the user's own, never invented. Karya asks them once (ask_job_dates), keeps them on the resume and autofill types them into each employment block; if a date field is refused, call ask_job_dates, don't try other dates. Apply to EVERY job the user picked, one after another, without asking whether to continue; if one can't be done, application_queue(action="skip", job_id, reason). Upload only the PDF that tailor_resume made for THIS job. After Submit, the click result starts with RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED. Tell the user an application was submitted only for SUBMITTED (Karya then records it in the tracker itself). NOT SUBMITTED: fix the listed fields and submit again. UNCONFIRMED: browser_read_text and check before saying anything.
+- Applying honestly: answer every form question truthfully from the user's resume and profile. Questions about notice period, current/expected salary, gender, years of a specific experience, visa or relocation need the user's own answer: use the saved answers (get_application_profile), otherwise call ask_user with all such questions of the form at once; Karya won't type guesses, and never answer "Yes" just to qualify. Skills boxes: only the user's own skills (their resume), never the site's suggestions; Karya adds them one at a time. Job and school dates (start, end, still working there) and where a job was: only the user's own, never invented. Karya asks them once (ask_job_dates), keeps them on the resume and autofill types them into each employment block; if a date field is refused, call ask_job_dates, don't try other dates. Apply to EVERY job the user picked, one after another, without asking whether to continue; if one can't be done, application_queue(action="skip", job_id, reason). Upload only the PDF that tailor_resume made for THIS job. After Submit, the click result starts with RESULT: SUBMITTED / NOT SUBMITTED / UNCONFIRMED. Tell the user an application was submitted only for SUBMITTED (Karya then records it in the tracker itself). NOT SUBMITTED: fix the listed fields and submit again. UNCONFIRMED: browser_read_text and check before saying anything.
 - Resume: before applying, check get_resume_data. No master resume yet? import_resume from their file; no file at all? Ask the user to add one (Settings > Resume path) or build it with them by asking short questions, then save_resume_data. For EVERY application call tailor_resume(job_url): it makes a PDF aligned with that posting from the user's real facts. It never adds skills; if it returns suggested_skills, ask the user whether they have them and use add_resume_skills (they approve) before tailoring again.
 - Freelance: search_freelance, then draft a proposal for the best matches.
 - Contacts/leads: find_contacts(url) lists public emails and social links from a website.
@@ -279,6 +279,7 @@ class Agent:
         self._auto_count = 0
         self._asked_counts: dict[str, int] = {}
         self._chose_once = False
+        self.pending_reports: list[dict] = []   # bots' reports, added to the chat before the user's next message
         from . import answers as answers_mod
         if self.note_user:
             for m in [m for m in self.history if m.get("role") == "user"][-4:]:
@@ -355,6 +356,12 @@ class Agent:
         hints = [SHORT_GROUP_HINTS[g] for g in sorted(groups or set()) if g in SHORT_GROUP_HINTS]
         return SHORT_CORE.format(**values) + ("\n" + "\n".join(hints) if hints else "") + tail
 
+    def bot_report(self, bot: str, report: str) -> None:
+        """A bot finished: its report becomes part of the chat, so "apply for 4" or "the CapsLock one" refer to it."""
+        text = str(report or "").strip()
+        if text:
+            self.pending_reports.append({"role": "assistant", "content": f"{bot}'s report:\n{text[:4000]}", "_bot": bot})
+
     def visible_history(self) -> list[dict]:
         """Chat transcript for the UI (user + assistant text only)."""
         out = []
@@ -378,6 +385,14 @@ class Agent:
             user_msg["_user_words"] = user_words
         if focus.wants_keep_going(user_text):
             user_msg["_keep_going"] = True
+        refs = []
+        if not self.bot:
+            self.history.extend(self.pending_reports)
+            self.pending_reports = []
+            from . import job_lists
+            refs = job_lists.resolve(user_text)   # "apply for 4": #4 in the list the user was shown last
+            if refs:
+                user_msg["_means"] = job_lists.meaning(refs)
         self.history.append(user_msg)
         run_start = len(self.history) - 1
         self._note_addresses([user_msg])
@@ -390,6 +405,8 @@ class Agent:
         from . import answers as answers_mod
         if self.note_user or user_words:
             answers_mod.note_user_message(user_text if self.note_user else user_words)
+        if refs:   # the jobs they meant count as named by the user (their links and ids)
+            answers_mod.note_user_message(user_msg["_means"])
         groups = registry.route_groups(user_text) | self.recent_groups | self._groups_from_history()
         used_groups: set[str] = set()
         loop = asyncio.get_running_loop()
@@ -418,8 +435,13 @@ class Agent:
                                                 f"so Karya won't apply to it. If that's wrong, say \"{job.get('company')} isn't done\"."})
         # Only a job request (or a short "continue" right after a job run) carries on with the picked jobs.
         # A bot has its own pick list (apply_queue.queue_file), so it carries on with its own picks, never the chat's.
-        self._queue_task = bool(apply_queue.pending()) and apply_queue.wanted_in(user_words if self.bot else user_text)
+        # The jobs the user named by number come first: an older pick list never takes over (2026-10-19: "apply for 4"
+        # opened Cisco from yesterday's list)
+        self._queue_task = not refs and bool(apply_queue.pending()) and \
+            apply_queue.wanted_in(user_words if self.bot else user_text)
         self._budget = MAX_STEPS + (min(EXTRA_STEPS_CAP, STEPS_PER_JOB * len(apply_queue.pending())) if self._queue_task else 0)
+        if refs:
+            self._budget = MAX_STEPS + min(EXTRA_STEPS_CAP, STEPS_PER_JOB * len(refs))
         self._basics_asked = False
         if self._queue_task:
             await self._ask_basics()

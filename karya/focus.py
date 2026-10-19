@@ -160,10 +160,14 @@ def task_tail(info: dict, keep_going: bool) -> str:
         return ""
     lines = ["", "CURRENT TASK (work on this; earlier requests in the chat are finished - don't go back to them "
                  "unless the user asks):", f"- The user asked: \"{_quote(users[0].get('content'))}\""]
+    if users[0].get("_means"):
+        lines.append(f"  ({users[0]['_means']})")
     later = users[1:][-6:]
     for n, m in enumerate(later):
         tag = "LATEST - do this now; it overrides earlier instructions when they conflict" if n == len(later) - 1 else "then"
         lines.append(f"- {tag}: \"{_quote(m.get('content'))}\"")
+        if m.get("_means"):
+            lines.append(f"  ({m['_means']})")
     if keep_going:
         lines.append("- KEEP GOING: the user wants this finished without stopping. Don't ask \"shall I...?\" or offer "
                      "options: pick the best option yourself and continue. Finish what works on one site before trying "
@@ -206,7 +210,10 @@ _CLAIMS = {
               re.compile(r"e-?mails?|\bmails?\b|outreach|@|\bmessages?\b|proposals?|pitch|inbox|\bwrote\b|contacted", re.I)),
     "bid": (re.compile(r"\bbids?\b[^.\n]{0,40}\b(placed|submitted|sent)\b|\b(placed|submitted)\b[^.\n]{0,25}\bbids?\b", re.I),
             ("RESULT: SUBMITTED",), re.compile(r"\bbids?\b", re.I)),
-    "post": (re.compile(r"\b(posted|published)\b", re.I), ("RESULT: SUBMITTED", "Posted", CRITICAL_OK),
+    # "posted in the last 24 hours" is a job's date, not a claim (2026-10-19: Maya had to write her report twice)
+    "post": (re.compile(r"\b(posted|published)\b(?!\s+(?:in\s+the\s+(?:last|past)|within|on\s+\d|\d+\s*(?:h|d|hours?|"
+                        r"days?|weeks?)\b|today|yesterday|recently|this\s+week|since|ago|\(|date))", re.I),
+             ("RESULT: SUBMITTED", "Posted", CRITICAL_OK),
              re.compile(r"\bpost|publish|linkedin|tweet|instagram|facebook|reddit|thread|reel|story|\bit\b", re.I)),
     "submit": (re.compile(r"\b(submitted|applied)\b", re.I), ("RESULT: SUBMITTED", "Saved application", "Updated application"),
                re.compile(r"applic|\bform\b|\bjobs?\b|\broles?\b|position|resume|\bcv\b|\bto\b", re.I)),
