@@ -211,8 +211,9 @@ _CLAIMS = {
     "bid": (re.compile(r"\bbids?\b[^.\n]{0,40}\b(placed|submitted|sent)\b|\b(placed|submitted)\b[^.\n]{0,25}\bbids?\b", re.I),
             ("RESULT: SUBMITTED",), re.compile(r"\bbids?\b", re.I)),
     # "posted in the last 24 hours" is a job's date, not a claim (2026-10-19: Maya had to write her report twice)
-    "post": (re.compile(r"\b(posted|published)\b(?!\s+(?:in\s+the\s+(?:last|past)|within|on\s+\d|\d+\s*(?:h|d|hours?|"
-                        r"days?|weeks?)\b|today|yesterday|recently|this\s+week|since|ago|\(|date))", re.I),
+    "post": (re.compile(r"\b(posted|published)\b(?!\s+(?:in\s+the\s+(?:last|past)|within|on\s+(?:\d|(?:jan|feb|mar|apr|"
+                        r"may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b)|\d+\s*(?:h|d|hours?|days?|weeks?)\b|since|ago|\(|date))",
+                        re.I),
              ("RESULT: SUBMITTED", "Posted", CRITICAL_OK),
              re.compile(r"\bpost|publish|linkedin|tweet|instagram|facebook|reddit|thread|reel|story|\bit\b", re.I)),
     "submit": (re.compile(r"\b(submitted|applied)\b", re.I), ("RESULT: SUBMITTED", "Saved application", "Updated application"),

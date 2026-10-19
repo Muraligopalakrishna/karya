@@ -103,7 +103,9 @@ def test_both_cisco_jobs_can_be_marked_applied_by_the_user():
 def test_a_job_posting_date_is_not_a_claim_to_have_posted():
     assert focus.unverified_claim("I searched for PM roles in India posted in the last 24 hours.", [], []) is None
     assert focus.unverified_claim("Found 5 jobs posted 2 days ago.", [], []) is None
+    assert focus.unverified_claim("Jobs posted on 18 Oct and posted within a week.", [], []) is None
     assert focus.unverified_claim("I posted your video on LinkedIn.", [], []) == "post"
+    assert focus.unverified_claim("Your video was posted today.", [], []) == "post"      # still needs proof
 
 
 # ---------------------------------------------------------------- skills boxes
