@@ -161,6 +161,20 @@ Meta Muse, OpenAI Dots and Grok Bot run on the companies' cloud computers, so th
 - PC help. Diagnose and fix problems, manage files, run commands (it asks first).
 - Websites. Build, preview and publish to Vercel.
 
+## Learn a site once, call it like an API
+
+Driving a web page with the AI is slow and costs tokens on every step. For a site you use again and again, Karya can learn the site's own request once and then call it directly over HTTP, with no browser and no AI in the loop.
+
+It works the way a browser's own page does. Karya watches the page make a request, finds the part that was your input, and saves it as an operation. After that, "search Goodreads for Dune" or "get the next page of jobs" is one fast call that returns clean data, not a dozen clicks.
+
+- Ask for it in plain words: "learn Hacker News search so it's fast", or just use a site a lot and Karya will offer. Under the hood it uses `site_api_scout` (look at what the page sends), `site_api_learn` (save a read operation from two examples) and `site_api_call` (run it). `site_api_list` shows what's learned.
+- Reads run on their own and are cheap. A learned search or listing answers in a second or two and reads about half the tokens of driving the browser.
+- Logged-in sites work through your own Chrome (the extension), so your session is used and nothing is exported. The saved operation keeps only references to your cookies and tokens, never their values.
+- It heals itself. If the site moves an endpoint or renames a field, Karya learns it again and keeps the new version only after a fresh call works, so a call never returns stale or wrong data.
+- Writes (applying, posting, sending) are different. Karya records the action once while it does it in the browser, then asks you before every replay, and reports it done only when the site confirms it, never from an HTTP 200 alone. CAPTCHAs and logins still need you.
+
+Everything stays on your PC: learned operations in `data/site_apis`, your sessions alongside them, both left out of git. It only knows the operations you taught it, and you should read each site's terms before automating it.
+
 ## Use your own Chrome
 
 Karya browses in its own Chrome window by default. To let it work in your everyday Chrome, with the logins you already have, add the Karya Browser Link extension once:

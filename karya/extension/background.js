@@ -212,6 +212,7 @@ function explain(e) {
 // detaches 20 seconds after the last such action. If attaching isn't possible, the simulated events are used.
 const REAL_MOUSE_OPS = new Set(["click_at", "drag", "move_piece"]);
 let dbgTab = null;
+let recording = null;   // site-API write recording in progress (one tab's network)
 let dbgTimer = null;
 
 if (chrome.debugger) {
@@ -534,6 +535,147 @@ const ops = {
   },
 
   async attention({ on, text }) { await setStatusBadge(on ? (text || "approval needed") : null); return { ok: true }; },
+
+  // ---- site APIs: learn a site's own requests once, then call them directly (karya/site_api.py) ----
+  // Run a request with the page's own fetch, on the site's origin, so the browser attaches the user's cookies and
+  // the site sees a normal same-origin call. Reads by default; a write is sent only with the user's approval upstream.
+  async site_fetch({ url, method = "GET", headers = {}, body = null, reuse = true }) {
+    const origin = new URL(url).origin;
+    let tabId = reuse ? await currentTab() : null;
+    let opened = null;
+    try {
+      const sameOrigin = tabId != null && (await chrome.tabs.get(tabId).catch(() => null))?.url?.startsWith(origin);
+      if (!sameOrigin) {
+        const win = await targetWindow();
+        opened = await retryTabs(() => chrome.tabs.create({ url: origin + "/", active: false, windowId: win || undefined }));
+        await addTab(opened.id, false);
+        tabId = opened.id;
+        await waitLoad(tabId, 30000);
+      }
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId }, world: "MAIN",
+        func: async (req) => {
+          try {
+            const resp = await fetch(req.url, { method: req.method, headers: req.headers || {},
+              body: req.body || undefined, credentials: "include" });
+            const text = await resp.text();
+            const h = {}; resp.headers.forEach((v, k) => { h[k] = v; });
+            return { status: resp.status, headers: h, body: text.slice(0, 2000000) };
+          } catch (e) { return { status: 0, headers: {}, body: "[fetch error: " + (e && e.message || e) + "]" }; }
+        },
+        args: [{ url, method, headers, body }],
+      });
+      const out = (r && r.result) || { status: 0, headers: {}, body: "[no result]" };
+      out.content_type = (out.headers || {})["content-type"] || "";
+      return out;
+    } finally {
+      if (opened) { try { await chrome.tabs.remove(opened.id); } catch (e) { /* gone */ } }
+    }
+  },
+
+  // ---- record mode for a write: buffer the requests the active tab makes while Karya does the action once ----
+  async record_start({}) {
+    if (!chrome.debugger) return { ok: false, error: "recording needs Chrome's debugger, which isn't available here" };
+    const tabId = await requireTab();
+    if (recording) { try { chrome.debugger.onEvent.removeListener(recording.onEvent); } catch (e) {} }
+    const buf = new Map();
+    const onEvent = (src, method, params) => {
+      if (!src || src.tabId !== tabId) return;
+      if (method === "Network.requestWillBeSent") {
+        buf.set(params.requestId, { method: params.request.method, url: params.request.url,
+          request_headers: params.request.headers || {}, request_body: params.request.postData || null,
+          resource_type: (params.type || "").toLowerCase() });
+      } else if (method === "Network.responseReceived") {
+        const r = buf.get(params.requestId);
+        if (r) { r.status = params.response.status; r.response_headers = params.response.headers || {};
+          r._type = (params.type || r.resource_type || "").toLowerCase(); r._done = false; }
+      } else if (method === "Network.loadingFinished") {
+        const r = buf.get(params.requestId); if (r) r._done = true;
+      }
+    };
+    await debuggerOn(tabId);
+    chrome.debugger.onEvent.addListener(onEvent);
+    await chrome.debugger.sendCommand({ tabId }, "Network.enable");
+    recording = { tabId, buf, onEvent };
+    return { ok: true };
+  },
+
+  async record_finish({}) {
+    if (!recording) return { ok: false, error: "nothing is being recorded" };
+    const { tabId, buf, onEvent } = recording;
+    recording = null;
+    const records = [];
+    try {
+      for (const [id, r] of buf) {
+        r.resource_type = r._type || r.resource_type || "";
+        const writeish = ["POST", "PUT", "PATCH", "DELETE"].includes(r.method);
+        if (writeish || ["xhr", "fetch"].includes(r.resource_type)) {
+          try {
+            const body = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: id });
+            r.response_body = body.base64Encoded ? "" : String(body.body || "").slice(0, 2000000);
+          } catch (e) { r.response_body = ""; }
+        } else { r.response_body = ""; }
+        delete r._type; delete r._done;
+        records.push(r);
+      }
+      return { ok: true, records };
+    } finally {
+      try { chrome.debugger.onEvent.removeListener(onEvent); } catch (e) {}
+      try { await chrome.debugger.sendCommand({ tabId }, "Network.disable"); } catch (e) {}
+      debuggerIdle();
+    }
+  },
+
+  // Load a page in a throwaway Karya tab and record the requests it makes (so site_api can learn a template). Scoped
+  // to this one tab via the debugger, so it never sees the user's other tabs.
+  async site_capture({ url, wait_ms = 3500 }) {
+    if (!chrome.debugger) return { ok: false, error: "capture needs Chrome's debugger, which isn't available here" };
+    const win = await targetWindow();
+    const tab = await retryTabs(() => chrome.tabs.create({ url: "about:blank", active: false, windowId: win || undefined }));
+    await addTab(tab.id, false);
+    const tabId = tab.id;
+    const reqs = new Map();
+    const records = [];
+    const onEvent = (src, method, params) => {
+      if (!src || src.tabId !== tabId) return;
+      if (method === "Network.requestWillBeSent") {
+        reqs.set(params.requestId, { method: params.request.method, url: params.request.url,
+          request_headers: params.request.headers || {}, request_body: params.request.postData || null,
+          resource_type: (params.type || "").toLowerCase() });
+      } else if (method === "Network.responseReceived") {
+        const r = reqs.get(params.requestId);
+        if (r) { r.status = params.response.status; r.response_headers = params.response.headers || {};
+          r._type = (params.type || r.resource_type || "").toLowerCase(); }
+      }
+    };
+    try {
+      await debuggerOn(tabId);
+      chrome.debugger.onEvent.addListener(onEvent);
+      await chrome.debugger.sendCommand({ tabId }, "Network.enable");
+      await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => null);
+      await retryTabs(() => chrome.tabs.update(tabId, { url }));
+      await sleep(Math.min(Number(wait_ms) || 3500, 15000));
+      for (const [id, r] of reqs) {
+        r.resource_type = r._type || r.resource_type || "";
+        if (["xhr", "fetch", "document", "script"].includes(r.resource_type) || /json/i.test((r.response_headers || {})["content-type"] || "")) {
+          try {
+            const body = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId: id });
+            r.response_body = body.base64Encoded ? "" : String(body.body || "").slice(0, 2000000);
+          } catch (e) { r.response_body = ""; }
+        } else {
+          r.response_body = "";
+        }
+        delete r._type;
+        records.push(r);
+      }
+      return { ok: true, records };
+    } finally {
+      chrome.debugger.onEvent.removeListener(onEvent);
+      try { await chrome.debugger.sendCommand({ tabId }, "Network.disable"); } catch (e) { /* detaching anyway */ }
+      debuggerIdle();
+      try { await chrome.tabs.remove(tabId); } catch (e) { /* gone */ }
+    }
+  },
 };
 
 async function onMessage(raw) {

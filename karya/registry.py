@@ -107,6 +107,8 @@ GROUP_KEYWORDS = {
                r"tradingview|what (do )?people (think|say)|people saying|buzz|hype",
     "web": r"crawl|scrap(e|ing)|spider|whole (site|website)|every page|all (the )?pages|forum|threads|research|"
            r"deep dive|investigate|find out|look into|what'?s happening|analy[sz]e",
+    "site_api": r"\bapi\b|like an api|without (the )?browser|call the site|site api|learn(ed)? (the )?site|turn .*into an api|"
+                r"faster|cheaper|fewer steps|reverse ?engineer|replay|directly|network request",
     "jobs": r"job|hiring|apply|application|resume|\bcv\b|freelanc|gig|upwork|fiverr|internship|career|interview|recruit|"
             r"proposal|\bbid|find work|client|salary|funded|funding|raised|startups?\b|workday|openings?|vacanc",
     "email": r"e-?mail|\bmail|inbox|gmail|outlook|send .* to|reply",
@@ -165,6 +167,7 @@ def names_for(groups: set[str] | None, compact: bool) -> list[str]:
 
 # For small plans: the tools each group really needs (others can be loaded with enable_tools).
 ESSENTIAL = {
+    "site_api": {"site_api_list", "site_api_call", "site_api_scout", "site_api_learn"},
     "jobs": {"find_jobs", "choose_jobs", "get_job_details", "get_application_profile", "track_application", "search_freelance",
              "application_queue", "find_funded_companies", "set_job_preferences"},
     "browser": {"browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_fill", "browser_select",
